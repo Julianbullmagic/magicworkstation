@@ -10,6 +10,17 @@ generateBooking() {
   Run, "C:\Program Files\nodejs\node.exe" "C:/Users/Julia/OneDrive/Documents/Magic Workstation/directbookingcapture.js", hide
 }
 
+generateMessage() {
+  clip_content := ClipboardAll
+
+  if (clip_content="")
+  {
+    return
+  }
+
+  Run, "C:\Program Files\nodejs\node.exe" "C:/Users/Julia/OneDrive/Documents/marketing-automation/generatemessage.js" "%clip_content%", hide
+}
+
 Tab & l::
   generateLead()
   ()
@@ -17,5 +28,10 @@ Tab & l::
 
 Tab & b::
   generateBooking()
+  ()
+  return
+
+Tab & m::
+  generateMessage()
   ()
   return

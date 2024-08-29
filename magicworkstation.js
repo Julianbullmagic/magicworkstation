@@ -3,58 +3,186 @@ const express = require('express');
 const { google } = require('googleapis');
 const http = require('http');
 const cors = require('cors');
+const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 const clipboardy = require('node-clipboardy');
 const fs = require('fs');
-const TOKEN_PATH = 'token.json';
+const { v4: uuidv4 } = require('uuid');
 const nodemailer = require('nodemailer');
 const PDFDocument = require('pdfkit');
+const path = require('path');
+const { processLead } = require('./leadcapture');
 const stream = require('stream');
-const {
-  addBookingToGoogleCalendar,
-  updateBookingInGoogleCalendar,
-  deleteBookingFromGoogleCalendar,
-  findGoogleEventByBookingId,
-} = require('./googlecalendarfunctions'); 
-// Initialize Supabase client
-const supabaseUrl = process.env.SUPABASEURL;
-const supabaseAnonKey = process.env.SUPABASEKEY;
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const { auth } = require('googleapis/build/src/apis/abusiveexperiencereport');
+const { OpenAI } = require("openai");
 
-const app = express();
-const server = http.createServer(app);
-app.use(express.json());
-app.use(cors());
+// Global variables
+let openai;
+let supabase;
+let app;
+let server;
+let oauth2Client;
+let calendar;
+let transporter;
 
-const port = 3000;
-const CLIENT_ID = process.env.GOOGLECLIENTID;
-const CLIENT_SECRET = process.env.GOOGLECLIENTSECRET;
-const REDIRECT_URI = 'http://localhost:3000/callback';
-const oauth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
+async function main(startServer = true) {
+  try {
+    // Initialize OpenAI
+    openai = new OpenAI({
+      apiKey: process.env.OPENAIKEYTWO,
+    });
 
-oauth2Client.on('tokens', (tokens) => {
-  if (tokens.refresh_token) {
-    // Store the new tokens
-    fs.writeFileSync(TOKEN_PATH, JSON.stringify(oauth2Client.credentials));
-    console.log('New tokens stored to', TOKEN_PATH);
+    // Initialize Supabase client
+    const supabaseUrl = process.env.SUPABASEURL;
+    const supabaseAnonKey = process.env.SUPABASEKEY;
+    supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+    // Initialize Express app
+    app = express();
+    console.log("Express app created");
+    server = http.createServer(app);
+    app.use(express.json());
+    app.use(cors());
+
+    // Initialize Google OAuth2 client
+    const CLIENT_ID = process.env.GOOGLECLIENTID;
+    const CLIENT_SECRET = process.env.GOOGLECLIENTSECRET;
+    const REDIRECT_URI = 'http://localhost:3000/callback';
+    oauth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
+
+    // Initialize nodemailer transporter
+    transporter = nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 587,
+      secure: false,
+      auth: {
+        user: 'julianbullmagic@gmail.com',
+        pass: process.env.GMAILAPPPASSWORD,
+      }
+    });
+
+    oauth2Client.on('tokens', (tokens) => {
+      if (tokens.refresh_token) {
+        updateTokensInDatabase(tokens).catch(console.error);
+        console.log('New tokens stored to database');
+      }
+    });
+
+    await initializeGoogleCalendar();
+    generateRoutes();
+
+    if (startServer) {
+      const port = 3000;
+      server = await new Promise((resolve) => {
+        const s = app.listen(port, '0.0.0.0', () => {
+          console.log(`Server listening on port ${port}`);
+          resolve(s);
+        });
+      });
+      console.log('Server start completed');
+    }
+
+    return { app, server, supabase, oauth2Client, openai, transporter };
+  } catch (error) {
+    console.error('Error in main function:', error);
+    throw error;
   }
-});
+}
 
+async function getValidAccessToken() {
+  try {
+    const { data, error } = await supabase
+      .from('oauth_tokens')
+      .select('*')
+      .limit(1)
+      .single();
 
+    if (error) throw error;
+
+    if (!data) {
+      console.log('No tokens found in the database');
+      return null;
+    }
+
+    if (new Date() > new Date(data.expiry_date)) {
+      // Token is expired, refresh it
+      oauth2Client.setCredentials({
+        refresh_token: data.refresh_token
+      });
+      const { credentials } = await oauth2Client.refreshAccessToken();
+      await updateTokensInDatabase(credentials);
+      return credentials.access_token;
+    }
+
+    return data.access_token;
+  } catch (error) {
+    console.error('Error in getValidAccessToken:', error);
+    return null;
+  }
+}
+async function updateTokensInDatabase(tokens) {
+  try {
+    const { error } = await supabase
+      .from('oauth_tokens')
+      .upsert({
+        id: 1, // Assuming we're always using id 1
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token || tokens.refresh_token,
+        expiry_date: new Date(tokens.expiry_date).toISOString()
+      });
+
+    if (error) throw error;
+
+    console.log('Tokens updated successfully in database');
+  } catch (error) {
+    console.error('Error updating tokens in database:', error);
+    throw error;
+  }
+}
+
+async function initializeGoogleCalendar() {
+  try {
+    const accessToken = await getValidAccessToken();
+    if (accessToken) {
+      oauth2Client.setCredentials({ access_token: accessToken });
+      console.log('Loaded saved tokens');
+      calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+      console.log('Calendar object initialized:', calendar ? 'Success' : 'Failed');
+      await makeCalendarApiCall(async () => {
+        await fetchAndStoreCalendarEvents();
+      });
+    } else {
+      throw new Error('No valid access token found');
+    }
+  } catch (error) {
+    console.error('Error initializing Google Calendar:', error);
+    const authUrl = oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      scope: ['https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/drive.file'],
+      prompt: 'consent'
+    });
+    console.log('Authorize this app by visiting this URL:', authUrl);
+  }
+}
 
 async function generateInvoice(booking) {
+  console.log('Starting invoice generation');
   return new Promise((resolve, reject) => {
+    console.log('Initializing PDFDocument');
     const doc = new PDFDocument({ margin: 50 });
-    const buffers = [];
-    const bufferStream = new stream.PassThrough();
-
-    bufferStream.on('data', chunk => buffers.push(chunk));
-    bufferStream.on('end', () => {
-      const pdfBuffer = Buffer.concat(buffers);
+    const chunks = [];
+    
+    doc.on('data', chunk => {
+      chunks.push(chunk);
+    });
+    
+    doc.on('end', () => {
+      console.log('PDF generation completed');
+      const pdfBuffer = Buffer.concat(chunks);
       resolve(pdfBuffer);
     });
 
-    doc.pipe(bufferStream);
+    console.log('Starting to write PDF content');
 
     // Set up some basic document properties
     doc.font('Helvetica-Bold');
@@ -81,7 +209,6 @@ async function generateInvoice(booking) {
     const invoiceDate = new Date().toLocaleDateString();
     const dueDate = new Date(booking.start_time).toLocaleDateString();
     doc.text(`Invoice Date: ${invoiceDate}`);
-    doc.text(`Due Date: ${dueDate}`);
     doc.text(`Event Date: ${new Date(booking.start_time).toLocaleDateString()}`);
     doc.moveDown();
 
@@ -110,28 +237,38 @@ async function generateInvoice(booking) {
       doc.text('[Your Bank Details Here]');
     }
 
+    // Add deposit and payment schedule information
+    doc.moveDown(2);
+    doc.font('Helvetica-Bold');
+    doc.text('Deposit and Payment Schedule');
+    doc.font('Helvetica');
+    doc.moveDown();
+
+    const depositAmount = booking.price * 0.25;
+    const remainingAmount = booking.price - depositAmount;
+
+    doc.text(`To secure your booking, we kindly request a deposit of $${depositAmount.toFixed(2)}, which is 25% of the total amount.`);
+    doc.text(`The remaining balance of $${remainingAmount.toFixed(2)} can be paid at your convenience, either before the event or within two weeks after.`);
+    doc.moveDown();
+    doc.text(`Here's a breakdown of the payments:`);
+    doc.text(`1. Deposit (due at your earliest convenience): $${depositAmount.toFixed(2)}`);
+    doc.text(`2. Remaining Balance: $${remainingAmount.toFixed(2)}`);
+    doc.moveDown();
+    doc.text('We appreciate your flexibility with the final payment and are happy to accommodate your preferred timing within the mentioned timeframe.');
+
     doc.moveDown(2);
     doc.text('Notes:');
     doc.text('- For bank transfers, please use your name and event date as the reference.');
+    doc.text('- If you have any questions about the payment schedule, please don\'t hesitate to reach out.');
     doc.moveDown();
-    doc.text('Thank you for your business!');
+    doc.text('Thank you for choosing Julian Bull Magic. We look forward to making your event magical!');
 
     // Finalize the PDF and end the stream
+    console.log('Finished writing PDF content');
     doc.end();
+    console.log('Document end called');
   });
 }
-
-
-// Create a transporter object
-const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 587,
-  secure: false, // use false for STARTTLS; true for SSL on port 465
-  auth: {
-    user: 'julianbullmagic@gmail.com',
-    pass: process.env.GMAILAPPPASSWORD,
-  }
-});
 
 
 async function sendEmail(recipient,subject,message,attachment){
@@ -148,15 +285,19 @@ async function sendEmail(recipient,subject,message,attachment){
       content: attachment
     }];
   }
-  // Send the email
-  transporter.sendMail(mailOptions, function(error, info){
-    if (error) {
-      console.log('Error:', error);
-    } else {
-      console.log('Email sent: ', info.response);
-    }
+  return new Promise((resolve, reject) => {
+    transporter.sendMail(mailOptions, function(error, info) {
+      if (error) {
+        console.log('Error:', error);
+        reject(error);
+      } else {
+        console.log('Email sent: ', info.response);
+        resolve(info);
+      }
+    });
   });
 }
+
 
 async function sendEmailWithInvoice(recipient, subject, booking, auth) {
   try {
@@ -165,15 +306,26 @@ async function sendEmailWithInvoice(recipient, subject, booking, auth) {
 
     // Upload to Google Drive
     const fileName = `Invoice_${booking.customer_name}_${new Date(booking.start_time).toISOString().split('T')[0]}.pdf`;
-    const fileId = await uploadToDrive(auth, invoiceBuffer, fileName, 'application/pdf');
+    let fileId = await uploadToDrive(auth, invoiceBuffer, fileName, 'application/pdf');
 
     // Send email with invoice
     let message = `Hi ${booking.customer_name},
 
-    I have attached the invoice for my services to this email.
-    The invoice has also been saved to Google Drive for my records.`;
+    I have attached the invoice for my services to this email. I have a 25% deposit to confirm the booking, details for a bank 
+    transfer are inside but if you prefer another method, that is also fine, except I'm not set up to take credit or debit cards.`;
 
     await sendEmail(recipient, subject, message, invoiceBuffer);
+
+    // Update the booking in Supabase
+    const { error } = await supabase
+      .from('Bookings')
+      .update({ 
+        sent_invoice: true,
+        invoice_file_id: fileId  // Store the Google Drive file ID
+      })
+      .eq('id', booking.id);
+
+    if (error) throw error;
 
     console.log('Invoice sent successfully and uploaded to Google Drive');
 
@@ -216,17 +368,86 @@ async function uploadToDrive(auth, fileBuffer, fileName, mimeType) {
   }
 }
 
-async function fetchAndStoreCalendarEvents(auth) {
-  const calendar = google.calendar({ version: 'v3', auth });
-  const now = new Date();
-  const twoMonthsAgo = new Date(now.setMonth(now.getMonth() - 2));
-  const twoMonthsLater = new Date(now.setMonth(now.getMonth() + 4));
+
+async function updateBookingInGoogleCalendar(booking) {
+  return await makeCalendarApiCall(async () => {
+  let event = {
+    summary: booking.customer_name || 'Untitled Event',
+    description: booking.summary || '',
+    start: {
+      dateTime: toUTC(booking.start_time),
+      timeZone: 'Australia/Sydney',
+    },
+    end: {
+      dateTime: toUTC(booking.end_time),
+      timeZone: 'Australia/Sydney',
+    },
+    location: booking.address || '',
+    extendedProperties: {
+      private: {
+        customerName: booking.customer_name || '',
+        phoneNumber: booking.phone_number || '',
+        address: booking.address || '',
+        emailAddress: booking.email_address || '',
+        price: (booking.price || '0').toString(),
+      }
+    }
+  };
 
   try {
+    const res = await calendar.events.update({
+      calendarId: 'primary',
+      eventId: booking.id,
+      resource: event,
+    });
+    console.log('Event updated: %s', res.data.htmlLink);
+    return res.data;
+  } catch (error) {
+    console.error('Error updating Google Calendar event:', error);
+    if (error.response) {
+      console.error('Response data:', error.response.data);
+    }
+    throw error;
+  }
+})
+}
+
+async function removeOldPaidBookings() {
+  const twoMonthsAgo = new Date();
+  twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+  
+  try {
+    const { data, error } = await supabase
+      .from('Bookings')
+      .delete()
+      .lt('end_time', twoMonthsAgo.toISOString())
+      .eq('full_payment_made', true)
+      .select();
+
+    if (error) {
+      console.error('Error removing old paid bookings:', error);
+    } else {
+      console.log(`Removed ${data ? data.length : 0} old paid bookings`);
+    }
+  } catch (error) {
+    console.error('Error in removeOldPaidBookings:', error);
+  }
+}
+
+async function fetchAndStoreCalendarEvents() {
+  await makeCalendarApiCall(async () => {
+  const now = new Date();
+  const twoMonthsAgo = new Date(now.setMonth(now.getMonth() - 2));
+
+  try {
+    // First, remove old paid bookings
+    await removeOldPaidBookings();
+
     const res = await calendar.events.list({
+      auth: oauth2Client,
       calendarId: 'primary',
       timeMin: twoMonthsAgo.toISOString(),
-      timeMax: twoMonthsLater.toISOString(),
+      // No timeMax parameter, to fetch all future events
       singleEvents: true,
       orderBy: 'startTime',
     });
@@ -247,11 +468,18 @@ async function fetchAndStoreCalendarEvents(auth) {
         const newBooking = {
           id: event.id,
           summary: event.summary || null,
+          address: event.location || null,
           event_name: event.summary || null,
           customer_name: event.summary || null,
-          start_time: event.start.dateTime || event.start.date,
-          end_time: event.end.dateTime || event.end.date,
+          start_time: toUTC(event.start.dateTime || event.start.date),
+          end_time: toUTC(event.end.dateTime || event.end.date),
         };
+        if(event.location){
+          let coords = await geocodeAddress(event.location);
+          console.log(coords, "COORDS!")
+          newBooking.latitude = coords.latitude
+          newBooking.longitude = coords.longitude
+        }
 
         const { error } = await supabase
           .from('Bookings')
@@ -269,21 +497,65 @@ async function fetchAndStoreCalendarEvents(auth) {
   } catch (error) {
     console.error('Error fetching or storing calendar events:', error);
   }
+})
 }
+
+async function makeCalendarApiCall(apiCall) {
+  try {
+    const accessToken = await getValidAccessToken();
+    if (!accessToken) {
+      throw new Error('No valid access token available');
+    }
+    oauth2Client.setCredentials({ access_token: accessToken });
+    return await apiCall();
+  } catch (error) {
+    if (error.code === 401) {
+      // Token might be invalid, try to refresh
+      const newToken = await getValidAccessToken(); // This will refresh the token
+      if (!newToken) {
+        throw new Error('Failed to refresh token');
+      }
+      oauth2Client.setCredentials({ access_token: newToken });
+      // Retry the API call
+      return await apiCall();
+    } else {
+      throw error;
+    }
+  }
+}
+
+function generateRoutes(){
+  console.log('Generating routes...');
+  app.use(express.static(path.join(__dirname, 'public')));
+
+// Serve HTML file for the root route
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+  
+  app.get('/auth', (req, res) => {
+    const authUrl = oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      scope: ['https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/drive.file'],
+      prompt: 'consent'
+    });
+    res.redirect(authUrl);
+  });
 
 app.post('/api/sync-calendar', async (req, res) => {
   try {
-    await fetchAndStoreCalendarEvents(oauth2Client);
-    res.status(200).json({ message: 'Calendar sync completed successfully' });
+    await makeCalendarApiCall(async () => {
+      await fetchAndStoreCalendarEvents();
+    })
+    res.status(200).json({ message: 'Calendar sync and cleanup completed successfully' });
   } catch (error) {
-    console.error('Error syncing calendar:', error);
-    res.status(500).json({ error: 'Failed to sync calendar' });
+    console.error('Error syncing calendar and cleaning up bookings:', error);
+    res.status(500).json({ error: 'Failed to sync calendar and clean up bookings' });
   }
 });
 
 // Replace WebSocket routes with HTTP endpoints
 app.get('/api/bookings', async (req, res) => {
-  console.log(req,"GETTING BOOKINGS")
   try {
     const { data, error } = await supabase
       .from('Bookings')
@@ -301,23 +573,36 @@ app.get('/api/bookings', async (req, res) => {
 
 // Updated route to create a booking
 app.post('/api/bookings', async (req, res) => {
-  const newBooking = req.body;
-  
+  let newBooking = req.body;
   try {
+    if (!newBooking.summary) {
+      newBooking.summary = newBooking.customer_name;
+    }
+    if (newBooking.address) {
+      let geoResult = await geocodeAddress(newBooking.address);
+      if (geoResult) {
+        newBooking.latitude = geoResult.latitude;
+        newBooking.longitude = geoResult.longitude;
+        newBooking.address = geoResult.placeName;
+        newBooking.is_sydney = geoResult.placeName.toLowerCase().includes('sydney');
+      }
+    }
     // Add to Google Calendar first
-    const googleEventId = await addBookingToGoogleCalendar(newBooking);
-
+    let validatedBooking = validateBooking(newBooking);
+    console.log(validatedBooking,"validated booking")
+    const googleEventId = await addBookingToGoogleCalendar(validatedBooking);
+    console.log(googleEventId,"googleEventId")
     // Use the Google Calendar event ID as the Supabase booking ID
     newBooking.id = googleEventId;
-
+    delete newBooking.sent_follow_up_email
     // Add to Supabase
     const { data, error } = await supabase
       .from('Bookings')
       .insert([newBooking])
       .select()
-      .single();
-
+      console.log(data)
     if (error) {
+      console.log("error",error)
       // If Supabase insert fails, delete the Google Calendar event
       await deleteBookingFromGoogleCalendar(googleEventId);
       throw error;
@@ -330,31 +615,6 @@ app.post('/api/bookings', async (req, res) => {
   }
 });
 
-// Updated route to update a booking
-app.put('/api/bookings/:id', async (req, res) => {
-  const { id } = req.params;
-  const updatedBooking = req.body;
-  
-  try {
-    // Update in Google Calendar
-    await updateBookingInGoogleCalendar({ ...updatedBooking, id });
-
-    // Update in Supabase
-    const { data, error } = await supabase
-      .from('Bookings')
-      .update(updatedBooking)
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    res.json(data);
-  } catch (error) {
-    console.error('Error updating booking:', error);
-    res.status(500).json({ error: 'Failed to update booking' });
-  }
-});
 
 // Updated route to delete a booking
 app.delete('/api/bookings/:id', async (req, res) => {
@@ -388,6 +648,18 @@ app.post('/api/bookings/update', async (req, res) => {
       .eq('id', updatedBooking.id)
       .single();
 
+    // Check if the address has changed
+    if (updatedBooking.address && updatedBooking.address !== oldBooking.address) {
+      const coords = await geocodeAddress(updatedBooking.address);
+      if (coords) {
+        updatedBooking.latitude = coords.latitude;
+        updatedBooking.longitude = coords.longitude;
+      } else {
+        console.error('Failed to geocode new address');
+        // You might want to handle this error case according to your needs
+      }
+    }
+
     const { data: updated, error } = await supabase
       .from('Bookings')
       .update(updatedBooking)
@@ -396,6 +668,9 @@ app.post('/api/bookings/update', async (req, res) => {
       .single();
     
     if (error) throw error;
+
+    // Update Google Calendar
+    await updateBookingInGoogleCalendar(updated);
 
     if (updated.sent_invoice !== oldBooking.sent_invoice && updated.sent_invoice === true) {
       const pdfBuffer = await generateInvoice(updated);
@@ -435,7 +710,6 @@ app.post('/api/bookings/update', async (req, res) => {
 
 // Replace WebSocket routes with HTTP endpoints
 app.get('/api/leads', async (req, res) => {
-  console.log(req,"GETTING Leads")
   try {
     const { data, error } = await supabase
       .from('Leads')
@@ -451,22 +725,115 @@ app.get('/api/leads', async (req, res) => {
   }
 });
 
-app.post('/api/leads/update', async (req, res) => {
-  const updatedLead = req.body;
-  console.log(updatedLead)
+app.post('/api/parse-event', async (req, res) => {
+  const { description } = req.body;
+ console.log(description)
   try {
-    const { data: updated, error } = await supabase
+    let year=new Date().getFullYear();
+    const prompt = `Here is some information about an event, copied from a website "${description}".
+    I would like you to respond with a JSON object containing properties for some crucial information you 
+    might find in the event information. If you can find the person's name, give the object a customer_name property
+    containing the customer name, if you can find an email address have an email_address property, same for a
+    phone_number, price, address, start_time and end_time (in AEST), and also make a short summary stored in the summary property. 
+    The addresses are all within New South Wales Australia, if this is not mentioned, append this to the end of the address.
+    If the year of the booking is not explicitly mentioned in the start and/or end time, assume it is taking place in ${year}.
+    There might be a conversation included in which the customer gives updated or more specific details about the event, in that
+    case you should use this more recent or specific information in your response.
+    The response should be a full, complete JSON object, starting with { and ending with } and nothing else outside this.
+    It should be a JSON object, not a Javascript object. Include no special characters in the response, essentially it is minified.`;
+  
+    let chatGPTResponse = await getChatGPTResponse(prompt);
+    chatGPTResponse = JSON.parse(chatGPTResponse);
+    console.log(chatGPTResponse)
+    res.json(chatGPTResponse);
+  } catch (error) {
+    console.error('Error parsing event description:', error);
+    res.status(500).json({ error: 'Failed to parse event description' });
+  }
+});
+
+app.post('/api/leads', async (req, res) => {
+  console.log("Processing new lead");
+  try {
+    const newLead = req.body;
+    
+    if (newLead.address) {
+      let geoResult = await geocodeAddress(newLead.address);
+      if (geoResult) {
+        newLead.latitude = geoResult.latitude;
+        newLead.longitude = geoResult.longitude;
+        newLead.address = geoResult.placeName;
+        newLead.is_sydney = geoResult.placeName.toLowerCase().includes('sydney');
+      }
+    }
+    
+    // Process the lead using the imported function
+    const processedLead = await processLead(newLead, supabase);
+
+    if (!processedLead) {
+      throw new Error("Failed to process lead");
+    }
+
+    // Insert the processed lead into the database
+    const { data, error } = await supabase
+      .from('Leads')
+      .insert([{
+        ...processedLead,
+        id:uuidv4(),
+        latitude: processedLead.latitude,
+        longitude: processedLead.longitude,
+      }])
+      .select();
+
+    if (error) throw error;
+
+    res.json({ type: 'Leads', data });
+  } catch (error) {
+    console.error('Error processing and inserting lead:', error);
+    res.status(500).json({ type: 'error', message: 'Error processing and inserting lead' });
+  }
+});
+
+app.put('/api/leads/:id', async (req, res) => {
+  const { id } = req.params;
+  const updatedLead = req.body;
+  
+  try {
+    // Fetch the current lead data
+    const { data: currentLead, error: fetchError } = await supabase
+      .from('Leads')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (fetchError) throw fetchError;
+
+    // Check if the address has changed
+    if (updatedLead.address && updatedLead.address !== currentLead.address) {
+      const coords = await geocodeAddress(updatedLead.address);
+      if (coords) {
+        updatedLead.latitude = coords.latitude;
+        updatedLead.longitude = coords.longitude;
+      } else {
+        console.error('Failed to geocode new address for lead');
+        // You might want to handle this error case according to your needs
+      }
+    }
+
+    // Update in Supabase
+    const { data, error } = await supabase
       .from('Leads')
       .update(updatedLead)
-      .eq('id', updatedLead.id)
+      .eq('id', id)
       .select()
       .single();
 
     if (error) throw error;
-    res.json({ type: 'leadUpdated', data: updated });
+
+    res.json(data);
   } catch (error) {
-    console.error(error,'Error updating lead:');
-    res.status(500).json({ type: 'error', message: 'Error updating lead' });
+    console.error('Error updating lead:', error);
+    res.status(500).json({ error: 'Failed to update lead' });
   }
 });
 
@@ -479,12 +846,24 @@ app.post('/delete', async (req, res) => {
     let tableName;
     if (type === 'Bookings') {
       tableName = 'Bookings';
+      
+      // Delete from Google Calendar
+      try {
+        await deleteBookingFromGoogleCalendar(bookingid);
+      } catch (calendarError) {
+        console.error('Error deleting from Google Calendar:', calendarError);
+        // Decide how to handle this error. You might want to:
+        // - Continue with the database deletion anyway
+        // - Send a warning to the client
+        // - Or, if calendar sync is critical, you might want to abort the whole operation
+      }
     } else if (type === 'Leads') {
       tableName = 'Leads';
     } else {
       throw new Error('Invalid type specified');
     }
 
+    // Delete from Supabase
     const { error } = await supabase
       .from(tableName)
       .delete()
@@ -499,7 +878,7 @@ app.post('/delete', async (req, res) => {
   }
 });
 
-app.post('/convert-lead-to-booking', async (req, res) => {
+app.post('/remove-lead', async (req, res) => {
   const { leadId } = req.body;
   
   try {
@@ -513,26 +892,6 @@ app.post('/convert-lead-to-booking', async (req, res) => {
     if (fetchError) throw fetchError;
     if (!lead) throw new Error('Lead not found');
 
-    // Insert the lead into the Bookings table
-    const { data: newBooking, error: insertError } = await supabase
-      .from('Bookings')
-      .insert([{
-        summary: lead.summary,
-        event_name: lead.event_name,
-        customer_name: lead.customer_name,
-        start_time: lead.start_time,
-        end_time: lead.end_time,
-        phone_number: lead.phone_number,
-        address: lead.address,
-        email_address: lead.email_address,
-        price: lead.price
-        // Add any other fields that need to be transferred
-      }])
-      .select()
-      .single();
-
-    if (insertError) throw insertError;
-
     // Delete the lead
     const { error: deleteError } = await supabase
       .from('Leads')
@@ -541,30 +900,37 @@ app.post('/convert-lead-to-booking', async (req, res) => {
 
     if (deleteError) throw deleteError;
 
-    res.status(200).json({ message: 'Lead successfully converted to booking', newBookingId: newBooking.id });
+    res.status(200).json({ message: 'Lead successfully converted to booking'});
   } catch (error) {
     console.error('Error converting lead to booking:', error);
     res.status(500).json({ error: 'Failed to convert lead to booking' });
   }
 });
 
+app.get('/auth', (req, res) => {
+  const authUrl = oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      scope: ['https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/drive.file'],
+      prompt: 'consent'
+  });
+  res.redirect(authUrl);
+});
+
+app.get('/auth-status', (req, res) => {
+  const isAuthenticated = !!oauth2Client.credentials.access_token;
+  res.json({ isAuthenticated });
+});
+
 app.get('/callback', async (req, res) => {
-  const code = req.query.code;
-
+  const { code } = req.query;
   try {
-    const { tokens } = await oauth2Client.getToken(code);
-    oauth2Client.setCredentials(tokens);
-
-    // Save the tokens to file
-    fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens));
-    console.log('Token stored to', TOKEN_PATH);
-
-    res.send('Authentication successful! You can close this tab.');
-
-    await fetchEvents(oauth2Client);
+      const { tokens } = await oauth2Client.getToken(code);
+      oauth2Client.setCredentials(tokens);
+      await updateTokensInDatabase(tokens);
+      res.redirect('./auth-success.html');
   } catch (error) {
-    console.error('Error retrieving access token:', error);
-    res.send('Authentication failed.');
+      console.error('Error retrieving access token:', error);
+      res.redirect('./auth-error.html');
   }
 });
 
@@ -604,19 +970,11 @@ app.post('/send-email', async (req, res) => {
     res.status(500).json({ error: 'Failed to send information request' });
   }
 });
-
-
-function loadSavedTokensIfExist() {
-  try {
-    const token = fs.readFileSync(TOKEN_PATH);
-    oauth2Client.setCredentials(JSON.parse(token));
-    return true;
-  } catch (error) {
-    return false;
-  }
+console.log("Finished route definitions");
 }
 
 async function syncCalendarWithSupabase(calendarEvents) {
+  await makeCalendarApiCall(async () => {
   // Fetch all existing bookings from Supabase
   const { data: existingBookings, error } = await supabase
     .from('Bookings')
@@ -654,7 +1012,12 @@ async function syncCalendarWithSupabase(calendarEvents) {
       full_payment_made:null,
     };
 
-
+if ('address' in event){
+  let coords=await geocodeAddress(event.address);
+  console.log(coords,"COORDS!")
+  bookingData.latitude = coords.latitude
+  bookingData.longitude = coords.longitude
+}
 if ('cash' in event) bookingData.cash = event.cash;
 if ('customer_happy' in event) bookingData.customer_happy = event.customer_happy;
 if ('deposit_paid' in event) bookingData.deposit_paid = event.deposit_paid;
@@ -699,55 +1062,267 @@ if ('full_payment_made' in event) bookingData.full_payment_made = event.full_pay
       if (error) console.error('Error deleting outdated booking:', error);
     }
   }
+})
 }
 
 async function fetchEvents(auth) {
+  await makeCalendarApiCall(async () => {
     console.log('Fetching events...');
-    const calendar = google.calendar({ version: 'v3', auth });
   
     const now = new Date();
     const timeMin = new Date(now.setMonth(now.getMonth() - 2)).toISOString();
     const timeMax = new Date(now.setMonth(now.getMonth() + 4)).toISOString();
   
-    console.log('Fetching events between:', timeMin, 'and', timeMax); // Log the time range
+    console.log('Fetching events between:', timeMin, 'and', timeMax);
     
-  try {
-    const res = await calendar.events.list({
-      calendarId: 'primary',
-      timeMin: timeMin,
-      timeMax: timeMax,
-      singleEvents: true,
-      orderBy: 'startTime',
-    });
-
-    console.log('API Response:', res.data); // Log the full API response
-
-    const events = res.data.items;
-    if (events.length) {
-      await syncCalendarWithSupabase(events);
-    } else {
-      console.log('No upcoming events found.');
+    if (!calendar) {
+      console.error('Calendar object is not initialized');
+      calendar = google.calendar({ version: 'v3', auth: oauth2Client });
     }
-  } catch (error) {
-    console.error('Error fetching calendar events:', error);
-  }
-  }
-  
+    
+    try {
+      const res = await calendar.events.list({
+        calendarId: 'primary',
+        timeMin: timeMin,
+        timeMax: timeMax,
+        singleEvents: true,
+        orderBy: 'startTime',
+      });
 
-  if (loadSavedTokensIfExist()) {
-    console.log('Loaded saved tokens');
-    // Fetch and store calendar events on server start
-    fetchAndStoreCalendarEvents(oauth2Client);
-  } else {
-    const authUrl = oauth2Client.generateAuthUrl({
-      access_type: 'offline',
-      scope: ['https://www.googleapis.com/auth/calendar',
-        'https://www.googleapis.com/auth/drive.file'
-      ]
-    })
-    console.log('Authorize this app by visiting this URL:', authUrl);
+      console.log('API Response:', res.data);
+
+      const events = res.data.items;
+      if (events.length) {
+        await syncCalendarWithSupabase(events);
+      } else {
+        console.log('No upcoming events found.');
+      }
+    } catch (error) {
+      console.error('Error fetching calendar events:', error);
+    }
+  });
+}
+  
+  function toUTC(dateString) {
+    return new Date(dateString).toISOString();
   }
   
-  server.listen(port, '0.0.0.0', () => {
-    console.log(`Server listening on port ${port}`);
+  function fromUTC(dateString, timeZone = 'Australia/Sydney') {
+    return new Date(dateString).toLocaleString('en-AU', { timeZone: timeZone });
+  }
+  
+  async function addBookingToGoogleCalendar(booking) {
+    return await makeCalendarApiCall(async () => {
+    // Validate and format date-time
+    const formatDateTime = (dateTimeString) => {
+      if (!dateTimeString) return null;
+      const date = new Date(dateTimeString);
+      if (isNaN(date.getTime())) return null;
+      return date.toISOString();
+    };
+  
+    const startDateTime = formatDateTime(booking.start_time);
+    const endDateTime = formatDateTime(booking.end_time);
+  
+    if (!startDateTime || !endDateTime) {
+      throw new Error('Invalid start or end time provided');
+    }
+  
+    const event = {
+      summary: booking.customer_name || "summary",
+      description: booking.summary || 'No description provided',
+      start: {
+        dateTime: startDateTime,
+        timeZone: 'Australia/Sydney',
+      },
+      end: {
+        dateTime: endDateTime,
+        timeZone: 'Australia/Sydney',
+      },
+      location: booking.address || 'No location provided',
+      visibility: 'public',
+      extendedProperties: {
+        private: {
+          customerName: booking.customer_name || 'No name provided',
+          phoneNumber: booking.phone_number || 'No phone provided',
+          address: booking.address || 'No address provided',
+          emailAddress: booking.email_address || 'No email provided',
+          price: (booking.price || 0).toString(),
+        }
+    }
+  }
+  
+    console.log('Creating event:', JSON.stringify(event, null, 2));
+  
+    try {
+      if (!oauth2Client.credentials || !oauth2Client.credentials.access_token) {
+        throw new Error('Google Calendar is not properly authenticated');
+      }
+  
+      const res = await calendar.events.insert({
+        auth: oauth2Client,
+        calendarId: 'primary',
+        resource: event,
+      });
+  
+      console.log('Event created: %s', res.data.htmlLink);
+      return res.data.id;
+    } catch (error) {
+      console.error('Error creating Google Calendar event:', error.message);
+      if (error.response) {
+        console.error('Error response:', error.response.data);
+      }
+      throw error;
+    }
+  })
+}
+  
+  // Function to delete a booking from Google Calendar
+async function deleteBookingFromGoogleCalendar(eventId) {
+  return await makeCalendarApiCall(async () => {
+  try {
+    await calendar.events.delete({
+      calendarId: 'primary',
+      eventId: eventId,
+    });
+    console.log('Event deleted');
+  } catch (error) {
+    console.error('Error deleting Google Calendar event:', error);
+    throw error;
+  }
+})
+}
+
+
+  // Helper function to parse and validate date-time strings
+  function parseDateTime(dateTimeString) {
+    const date = new Date(dateTimeString);
+    if (isNaN(date.getTime())) {
+      throw new Error(`Invalid date-time string: ${dateTimeString}`);
+    }
+    return date.toISOString();
+  }
+  
+  // Function to validate booking object before creating event
+  function validateBooking(booking) {
+    if (!booking.summary) throw new Error('Booking summary is required');
+    if (!booking.start_time) throw new Error('Booking start time is required');
+    if (!booking.end_time) throw new Error('Booking end time is required');
+    
+    booking.start_time = parseDateTime(booking.start_time);
+    booking.end_time = parseDateTime(booking.end_time);
+    
+    return booking;
+  }
+  
+  function toAustralianTime(dateString) {
+    const date = new Date(dateString);
+    return date.toLocaleString('en-AU', { timeZone: 'Australia/Sydney' });
+  }
+  function displayBookingTimes(booking) {
+    const localStartTime = fromUTC(booking.start_time);
+    const localEndTime = fromUTC(booking.end_time);
+    console.log(`Event starts at ${localStartTime} and ends at ${localEndTime} (Australia/Sydney time)`);
+  }
+
+  async function geocodeAddress(address) {
+    const MAPBOX_ACCESS_TOKEN = process.env.MAPBOX_ACCESS_TOKEN;
+    
+    // Default to Australia
+    let country = 'AU';
+    let bbox = '112.9211,-43.7429,153.6386,-10.5672'; // Bounding box for Australia
+  
+    // Check if the address explicitly mentions a state or country
+    const lowercaseAddress = address.toLowerCase();
+    if (lowercaseAddress.includes('victoria') || lowercaseAddress.includes('vic')) {
+      bbox = '140.9621,-39.1596,150.0260,-33.9806'; // Victoria bounding box
+    } else if (lowercaseAddress.includes('new south wales') || lowercaseAddress.includes('nsw')) {
+      bbox = '141.0,-37.5,153.6,-28.5'; // NSW bounding box
+    } else if (lowercaseAddress.includes('queensland') || lowercaseAddress.includes('qld')) {
+      bbox = '137.9959,-29.1781,153.5516,-9.1422'; // Queensland bounding box
+    } else if (lowercaseAddress.match(/\b(usa|united states|america)\b/)) {
+      country = 'US';
+      bbox = '-171.791110603,18.91619,-66.96466,71.3577635769'; // USA bounding box
+    }
+    // Add more conditions for other states or countries as needed
+    try {
+      const response = await axios.get(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(address)}.json`, {
+        params: {
+          access_token: MAPBOX_ACCESS_TOKEN,
+          country: country,
+          bbox: bbox,
+          types: 'address,place'
+        }
+      });
+  
+      if (response.data.features.length > 0) {
+        const [longitude, latitude] = response.data.features[0].center;
+        const placeName = response.data.features[0].place_name;
+        return { latitude, longitude, placeName };
+      } else {
+        console.error('No results found for the given address');
+        return null;
+      }
+    } catch (error) {
+      console.error('Error geocoding address:', error);
+      return null;
+    }
+  }
+
+async function getChatGPTResponse(prompt) {
+  let response = await openai.chat.completions.create({
+    messages: [{ role: "system", content: prompt }],
+    max_tokens: 180,
+    model: "gpt-4o-mini",
+  }).catch(function(reason) {
+    console.log("error", reason);
   });
+  response = response.choices[0];
+  response = response.message.content;
+  return response;
+}
+
+
+
+if (require.main === module) {
+  // This block will only run if the script is executed directly
+  (async () => {
+    await main();
+  })();
+}
+
+
+module.exports = {
+  // Export all functions from the current file
+  getValidAccessToken,
+  updateTokensInDatabase,
+  initializeGoogleCalendar,
+  generateInvoice,
+  sendEmail,
+  sendEmailWithInvoice,
+  uploadToDrive,
+  updateBookingInGoogleCalendar,
+  removeOldPaidBookings,
+  fetchAndStoreCalendarEvents,
+  makeCalendarApiCall,
+  generateRoutes,
+  geocodeAddress,
+  getChatGPTResponse,
+  processLead,
+  validateBooking,
+  addBookingToGoogleCalendar,
+  deleteBookingFromGoogleCalendar,
+  syncCalendarWithSupabase,
+  toUTC,
+  fromUTC,
+  parseDateTime,
+  toAustralianTime,
+  main,  
+  app,
+  supabase,
+  oauth2Client,
+  updateTokensInDatabase 
+};
+
+console.log("magicworkstation.js fully loaded");
+

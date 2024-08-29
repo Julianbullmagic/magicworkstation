@@ -1,0 +1,46 @@
+main()
+getValidAccessToken()
+updateTokensInDatabase(tokens)
+initializeGoogleCalendar()
+generateInvoice(booking)
+sendEmail(recipient, subject, message, attachment)
+sendEmailWithInvoice(recipient, subject, booking, auth)
+uploadToDrive(auth, fileBuffer, fileName, mimeType)
+updateBookingInGoogleCalendar(booking)
+removeOldPaidBookings()
+fetchAndStoreCalendarEvents()
+makeCalendarApiCall(apiCall)
+generateRoutes()
+syncCalendarWithSupabase(calendarEvents)
+fetchEvents(auth)
+toUTC(dateString)
+fromUTC(dateString, timeZone)
+addBookingToGoogleCalendar(booking)
+deleteBookingFromGoogleCalendar(eventId)
+parseDateTime(dateTimeString)
+validateBooking(booking)
+toAustralianTime(dateString)
+displayBookingTimes(booking)
+geocodeAddress(address)
+getChatGPTResponse(prompt)
+
+
+Express routes:
+
+GET '/'
+GET '/auth'
+POST '/api/sync-calendar'
+GET '/api/bookings'
+POST '/api/bookings'
+DELETE '/api/bookings/:id'
+POST '/api/bookings/update'
+GET '/api/leads'
+POST '/api/parse-event'
+POST '/api/leads'
+PUT '/api/leads/:id'
+POST '/delete'
+POST '/remove-lead'
+GET '/auth-status'
+GET '/callback'
+POST '/send-invoice-request'
+POST '/send-email'

@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Authentication Successful</title>
+</head>
+<body>
+    <h1>Authentication Successful</h1>
+    <p>You can close this window and return to the application.</p>
+    <script>
+        window.opener.postMessage('auth-success', '*');
+        window.close();
+    </script>
+</body>
+</html>

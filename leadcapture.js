@@ -3,6 +3,7 @@ const { OpenAI } = require("openai");
 const axios = require('axios');
 const clipboardy = require('node-clipboardy');
 const { createClient } = require('@supabase/supabase-js');
+const { v4: uuidv4 } = require('uuid');
 
 let openai = new OpenAI({
   apiKey: process.env.OPENAIKEYTWO,
@@ -12,27 +13,136 @@ const supabaseUrl = process.env.SUPABASEURL;
 const supabaseAnonKey = process.env.SUPABASEKEY;
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+const pause = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 const MAPBOX_ACCESS_TOKEN = process.env.MAPBOX_ACCESS_TOKEN;
 
+// Log the token (first few characters) to verify it's being read
+console.log('MAPBOX_ACCESS_TOKEN:', MAPBOX_ACCESS_TOKEN ? MAPBOX_ACCESS_TOKEN.substring(0, 5) + '...' : 'Not set');
+
+// NSW coordinates (approximate center)
+const NSW_LAT = -32.163333;
+const NSW_LON = 147.016667;
+
+// NSW bounding box (approximate)
+const NSW_BBOX = '141.0,-37.5,153.6,-28.5';
+
 async function geocodeAddress(address) {
+  console.log('Geocoding address:', address);
   try {
-    const response = await axios.get(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(address)}.json?access_token=${MAPBOX_ACCESS_TOKEN}`);
-    const [longitude, latitude] = response.data.features[0].center;
-    return { latitude, longitude };
+    if (!MAPBOX_ACCESS_TOKEN) {
+      throw new Error('Mapbox access token is not set');
+    }
+
+    const response = await axios.get(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(address)}.json`, {
+      params: {
+        access_token: MAPBOX_ACCESS_TOKEN,
+        country: 'AU',
+        proximity: `${NSW_LON},${NSW_LAT}`,
+        bbox: NSW_BBOX,
+        types: 'address'
+      }
+    });
+
+    if (response.data.features && response.data.features.length > 0) {
+      const feature = response.data.features[0];
+      const [longitude, latitude] = feature.center;
+      
+      // Check if the result is in Australia and has a high relevance score
+      if (feature.context.some(ctx => ctx.id.startsWith('country.')) &&
+          feature.relevance > 0.8 &&
+          latitude >= -37.5 && latitude <= -28.5 && 
+          longitude >= 141.0 && longitude <= 153.6) {
+        return { latitude, longitude };
+      } else {
+        console.log('Address found, but not considered valid for this application');
+        return null;
+      }
+    } else {
+      console.log('No results found for the given address');
+      return null;
+    }
   } catch (error) {
-    console.error('Error geocoding address:', error);
+    console.error('Error geocoding address:', error.response ? error.response.data : error.message);
     return null;
   }
 }
 
+async function processLead(lead, supabase) {
+  console.log('Processing lead:', lead);
+  const leadCoords = await geocodeAddress(lead.address);
+  if (!leadCoords) {
+    console.error("Failed to geocode lead address");
+    return null;
+  }
+  console.log('Geocoded lead coordinates:', leadCoords);
+
+  // Fetch existing bookings
+  const { data: bookings, error } = await supabase
+    .from('Bookings')
+    .select('*')
+    .order('start_time', { ascending: true });
+
+  if (error) {
+    console.error("Error fetching bookings:", error);
+    return null;
+  }
+
+  const nearbyBookings = filterBookingsThatAreCloseInTimeToLead(lead, bookings);
+
+  const overlappingBookingIds = [];
+  const insufficientTravelTimeBookings = [];
+
+  for (const booking of nearbyBookings) {
+    if (!booking.latitude || !booking.longitude) {
+      console.warn(`Missing coordinates for booking ${booking.id}`);
+      continue;
+    }
+
+    const bookingCoords = {
+      latitude: booking.latitude,
+      longitude: booking.longitude
+    };
+
+    const isOverlapping = checkTimeOverlap(lead, booking);
+    if (isOverlapping) {
+      overlappingBookingIds.push(booking.id);
+    }
+
+    let travelTime = await calculateTravelTime(leadCoords, bookingCoords);
+    if (travelTime !== null) {
+      if (isPeakTrafficTime(new Date(lead.start_time)) || isPeakTrafficTime(new Date(booking.start_time))) {
+        travelTime *= 1.3; // Increase travel time by 30% during peak hours
+      }
+
+      const timeBetweenEvents = Math.abs(new Date(lead.start_time) - new Date(booking.start_time)) / (1000 * 60 * 60);
+      if (timeBetweenEvents < travelTime) {
+        insufficientTravelTimeBookings.push(`${booking.id},${Math.round(travelTime * 60)}`);
+      }
+    }
+  }
+
+  console.log('Overlapping booking IDs:', overlappingBookingIds);
+  console.log('Insufficient travel time bookings:', insufficientTravelTimeBookings);
+
+  return {
+    ...lead,
+    latitude: leadCoords.latitude,
+    longitude: leadCoords.longitude,
+    overlapping_booking_ids: overlappingBookingIds.join(','),
+    insufficient_travel_time_booking_ids: insufficientTravelTimeBookings.join(',')
+  };
+}
+
 async function calculateTravelTime(origin, destination) {
   try {
-    const response = await axios.get(`https://api.mapbox.com/directions-matrix/v1/mapbox/driving/${origin.longitude},${origin.latitude};${destination.longitude},${destination.latitude}?access_token=${MAPBOX_ACCESS_TOKEN}`);
+    const response = await axios.get(`https://api.mapbox.com/directions-matrix/v1/mapbox/driving/${origin.longitude},${origin.latitude};${destination.longitude},${destination.latitude}?access_token=${MAPBOX_ACCESS_TOKEN}`, {
+      timeout: 5000 // 5 seconds timeout
+    });
     const travelTimeHours = response.data.durations[0][1] / 3600;
     return travelTimeHours;
   } catch (error) {
-    console.error('Error calculating travel time:', error);
+    console.error('Error calculating travel time:', error.response ? error.response.data : error.message);
     return null;
   }
 }
@@ -51,77 +161,29 @@ function isPeakTrafficTime(dateTime) {
          (timeInMinutes >= eveningPeakStart && timeInMinutes <= eveningPeakEnd);
 }
 
-function checkTimeOverlap(lead, booking) {
-  const leadStart = new Date(lead.start_time);
-  const leadEnd = new Date(lead.end_time);
-  const bookingStart = new Date(booking.start_time);
-  const bookingEnd = new Date(booking.end_time);
+function checkTimeOverlap(event1, event2) {
+  const start1 = new Date(event1.start_time);
+  const end1 = new Date(event1.end_time);
+  const start2 = new Date(event2.start_time);
+  const end2 = new Date(event2.end_time);
 
-  return (leadStart < bookingEnd && leadEnd > bookingStart);
-}
-async function processLead(lead, bookings) {
-  const leadCoords = await geocodeAddress(lead.address);
-  if (!leadCoords) {
-    console.error("Failed to geocode lead address");
-    return null;
+  // Check if one event starts exactly when the other ends
+  if (start1.getTime() === end2.getTime() || start2.getTime() === end1.getTime()) {
+    return true;
   }
 
-  lead.latitude = leadCoords.latitude;
-  lead.longitude = leadCoords.longitude;
-
-  const nearbyBookings = filterBookingsThatAreCloseInTimeToLead(lead, bookings);
-
-  const processedBookings = [];
-  const overlappingBookingIds = [];
-  const insufficientTravelTimeBookingIds = [];
-
-  for (const booking of nearbyBookings) {
-    const bookingCoords = await geocodeAddress(booking.address);
-    if (!bookingCoords) {
-      console.error(`Failed to geocode booking address for booking ${booking.id}`);
-      continue;
-    }
-
-    booking.latitude = bookingCoords.latitude;
-    booking.longitude = bookingCoords.longitude;
-
-    const isOverlapping = checkTimeOverlap(lead, booking);
-    if (isOverlapping) {
-      overlappingBookingIds.push(booking.id);
-    }
-    
-    let travelTime = await calculateTravelTime(leadCoords, bookingCoords);
-    if (travelTime !== null) {
-      if (isPeakTrafficTime(new Date(lead.start_time)) || isPeakTrafficTime(new Date(booking.start_time))) {
-        travelTime *= 1.3;
-      }
-    }
-
-    const timeBetweenEvents = Math.abs(new Date(lead.start_time) - new Date(booking.start_time)) / (1000 * 60 * 60);
-    const insufficientTravelTime = travelTime !== null && timeBetweenEvents < travelTime;
-    if (insufficientTravelTime) {
-      insufficientTravelTimeBookingIds.push(booking.id);
-    }
-
-    processedBookings.push({
-      ...booking,
-      isOverlapping,
-      travelTime,
-      insufficientTravelTime
-    });
-  }
-
-  return {
-    ...lead,
-    processedBookings,
-    overlapping_booking_ids: overlappingBookingIds.join(','),
-    insufficient_travel_time_booking_ids: insufficientTravelTimeBookingIds.join(',')
-  };
+  // Check for any overlap
+  return (start1 < end2 && end1 > start2);
 }
 
 async function upsertIntoSupabase(data) {
   console.log("Upserting data");
   try {
+    // Basic validation
+    if (!data.customer_name || !data.start_time || !data.end_time) {
+      throw new Error("Invalid lead data: missing required fields");
+    }
+
     const { data: existingLead, error: fetchError } = await supabase
       .from('Leads')
       .select('id')
@@ -133,10 +195,10 @@ async function upsertIntoSupabase(data) {
     }
 
     const leadData = {
+      id: data.id || uuidv4(),
       ...data,
-      processed_bookings: data.processedBookings,
-      overlapping_booking_ids: data.overlapping_booking_ids,
-      insufficient_travel_time_booking_ids: data.insufficient_travel_time_booking_ids
+      overlapping_booking_ids: data.overlapping_booking_ids || '',
+      insufficient_travel_time_booking_ids: data.insufficient_travel_time_booking_ids || ''
     };
 
     let result;
@@ -197,56 +259,53 @@ function filterBookingsThatAreCloseInTimeToLead(lead, bookings) {
     return Math.abs(leadStartToBokingEnd) <= 6 || Math.abs(bookingStartToLeadEnd) <= 6;
   });
 }
-
-(async () => {
-  let bookings=[]
+async function processLeadCapture() {
   try {
-    const { data: bookingsData, error: bookingsError } = await supabase
-      .from('Bookings')
-      .select('*')
-      .order('start_time', { ascending: true });
+    const input = clipboardy.readSync();
+    console.log("Clipboard content:", input);
 
-    if (bookingsError) throw bookingsError;
-    bookings=bookingsData
-    console.log("Bookings:", bookingsData);
-  } catch (error) {
-    console.error("Error fetching bookings:", error);
-  }
+    const year = new Date().getFullYear();
+    console.log(year, "YEAR");
 
-  const input = clipboardy.readSync();
-  const prompt = `Here is some information about an event, copied from a website "${input}".
-  I would like you to respond with a JSON object containing properties for some crucial information you 
-  might find in the event information. If you can find the person's name, give the object a customer_name property
-  containing the customer name, if you can find an email address have an email_address property, same for a
-  phone_number, price, address, start_time and end_time (in AEST), and also make a short summary stored in the summary property. The response should be a
-  full, complete JSON object, starting with { and ending with } and nothing else outside this.
-  It should be a JSON object, not a Javascript object. Include no special characters in the response, essentially it is minified.`;
+    const prompt = `Here is some information about an event, copied from a conversation or website "${input}"...`; // Rest of the prompt
 
-  let chatGPTResponse = await getChatGPTResponse(prompt);
-  chatGPTResponse = JSON.parse(chatGPTResponse);
-  const id = Date.now().toString();
+    let chatGPTResponse = await getChatGPTResponse(prompt);
+    chatGPTResponse = JSON.parse(chatGPTResponse);
+    console.log(chatGPTResponse);
 
-  // Add the id to the lead data
-  chatGPTResponse = {
-    id,
-    ...chatGPTResponse,
-    created_at: new Date().toISOString() // Add a timestamp if needed
-  };
-  console.log(chatGPTResponse);
-
-  if (typeof chatGPTResponse === 'object' && chatGPTResponse.customer_name) {
-    try {
-      const processedLead = await processLead(chatGPTResponse, bookings);
+    if (typeof chatGPTResponse === 'object' && chatGPTResponse.customer_name) {
+      const processedLead = await processLead(chatGPTResponse, supabase);
+      console.log(processedLead);
       if (processedLead) {
         const result = await upsertIntoSupabase(processedLead);
         console.log("Operation completed successfully:", result);
       } else {
-        console.log("Failed to process lead");
+        console.error("Failed to process lead");
       }
-    } catch (error) {
-      console.error("Error during processing:", error);
+    } else {
+      throw new Error("Invalid ChatGPT response: not a valid JavaScript object or missing customer_name");
     }
-  } else {
-    console.log("Parsed result is not a valid JavaScript object or missing customer_name.");
+  } catch (error) {
+    console.error("Error during processing:", error);
   }
-})();
+}
+
+if (require.main === module) {
+  // This block will only run if the script is executed directly
+  (async () => {
+    await processLeadCapture();
+  })();
+}
+
+module.exports = {
+  processLeadCapture,
+  geocodeAddress,
+  calculateTravelTime,
+  isPeakTrafficTime,
+  checkTimeOverlap,
+  processLead,
+  filterBookingsThatAreCloseInTimeToLead,
+  upsertIntoSupabase,
+  supabase
+};
+

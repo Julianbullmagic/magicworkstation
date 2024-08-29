@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Authentication Error</title>
+</head>
+<body>
+    <h1>Authentication Error</h1>
+    <p>There was an error during authentication. Please try again or contact support.</p>
+    <script>
+        window.opener.postMessage('auth-error', '*');
+        window.close();
+    </script>
+</body>
+</html>
