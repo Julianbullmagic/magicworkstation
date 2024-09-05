@@ -7,6 +7,7 @@ const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 const clipboardy = require('node-clipboardy');
 const fs = require('fs');
+const session = require('express-session');
 const { v4: uuidv4 } = require('uuid');
 const nodemailer = require('nodemailer');
 const PDFDocument = require('pdfkit');
@@ -15,6 +16,7 @@ const { processLead } = require('./leadcapture');
 const stream = require('stream');
 const { auth } = require('googleapis/build/src/apis/abusiveexperiencereport');
 const { OpenAI } = require("openai");
+const bodyParser = require('body-parser');
 
 // Global variables
 let openai;
@@ -24,6 +26,16 @@ let server;
 let oauth2Client;
 let calendar;
 let transporter;
+
+
+// Add this middleware function
+function requireAuth(req, res, next) {
+  if (req.session.isAuthenticated) {
+    next();
+  } else {
+    res.redirect('/login');
+  }
+}
 
 async function main(startServer = true) {
   try {
@@ -43,7 +55,15 @@ async function main(startServer = true) {
     server = http.createServer(app);
     app.use(express.json());
     app.use(cors());
-
+    app.use(session({
+      secret: process.env.SESSION_SECRET || 'your-secret-key',
+      resave: false,
+      saveUninitialized: true,
+      cookie: { secure: process.env.NODE_ENV === 'production' }
+    }));
+    // In your main function or server setup area, add these lines if they're not already present
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
     // Initialize Google OAuth2 client
     const CLIENT_ID = process.env.GOOGLECLIENTID;
     const CLIENT_SECRET = process.env.GOOGLECLIENTSECRET;
@@ -435,7 +455,7 @@ async function removeOldPaidBookings() {
 }
 
 async function fetchAndStoreCalendarEvents() {
-  await makeCalendarApiCall(async () => {
+  return await makeCalendarApiCall(async () => {
   const now = new Date();
   const twoMonthsAgo = new Date(now.setMonth(now.getMonth() - 2));
 
@@ -528,10 +548,57 @@ function generateRoutes(){
   console.log('Generating routes...');
   app.use(express.static(path.join(__dirname, 'public')));
 
-// Serve HTML file for the root route
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+app.post('/login', (req, res) => {
+  const { password } = req.body;
+  console.log('Received password:', password); // For debugging, remove in production
+  console.log('Expected password:', process.env.APP_PASSWORD); // For debugging, remove in production
+  
+  if (password === process.env.APP_PASSWORD) {
+    req.session.isAuthenticated = true;
+    res.redirect('/');
+  } else {
+    res.status(401).send('Invalid password');
+  }
 });
+
+// Make sure you have this route for serving the login page
+app.get('/login', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+
+
+  // Logout route
+  app.get('/logout', (req, res) => {
+    req.session.destroy(err => {
+      if (err) {
+        console.error('Error destroying session:', err);
+      }
+      res.redirect('/login');
+    });
+  });
+
+  // Protect API routes  
+  app.get('/api/auth-status', (req, res) => {
+    res.json({ isAuthenticated: !!req.session.isAuthenticated });
+  });
+  
+  // Modify the main route handler
+  app.get('/', (req, res) => {
+    if (req.session.isAuthenticated) {
+      res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    } else {
+      res.redirect('/login');
+    }
+  });
+  
+  // Modify API route protection
+  app.use('/api', (req, res, next) => {
+    if (req.session.isAuthenticated) {
+      next();
+    } else {
+      res.status(401).json({ error: 'Unauthorized' });
+    }
+  });
   
   app.get('/auth', (req, res) => {
     const authUrl = oauth2Client.generateAuthUrl({
@@ -968,6 +1035,14 @@ app.post('/send-email', async (req, res) => {
   } catch (error) {
     console.error('Error sending information request:', error);
     res.status(500).json({ error: 'Failed to send information request' });
+  }
+});
+
+app.use((req, res) => {
+  if (req.session.isAuthenticated) {
+    res.redirect('/');
+  } else {
+    res.redirect('/login');
   }
 });
 console.log("Finished route definitions");

@@ -22,6 +22,47 @@ body {
   padding: 20px;
 }
 
+#scrollToTodayButton {
+            position: sticky;
+            top: 10px;
+            z-index: 100;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+
+        .pagination {
+            display: flex;
+            justify-content: center;
+            margin-top: 20px;
+        }
+        .pagination button {
+            margin: 0 5px;
+            padding: 5px 10px;
+            cursor: pointer;
+        }
+
+.map-button {
+    background-color: #4CAF50;
+    border: none;
+    color: white;
+    padding: 5px 10px;
+    text-align: center;
+    text-decoration: none;
+    display: inline-block;
+    font-size: 14px;
+    margin: 4px 2px;
+    cursor: pointer;
+    border-radius: 4px;
+}
 /* Headings */
 h1, h2, h3 {
   text-align: center;
@@ -77,7 +118,7 @@ h2 {
 }
 
 /* Event and Lead containers */
-#events, #leads {
+#events, #leads, #allEvents {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-around;
@@ -235,6 +276,62 @@ h2 {
     margin: 5px 0;
   }
 }
+.pagination-controls {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 10px 0;
+    margin: 10px 0;
+    background-color: #f0f0f0;
+    border-radius: 5px;
+}
+
+.pagination-button {
+    padding: 5px 10px;
+    margin: 0 5px;
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+.pagination-button:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
+}
+
+.page-info {
+    margin: 0 10px;
+}
+
+.events-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.event {
+    border: 1px solid #ddd;
+    padding: 10px;
+    border-radius: 5px;
+}
+
+@media (max-width: 768px) {
+    .pagination-controls {
+        flex-wrap: wrap;
+    }
+
+    .pagination-button {
+        margin: 5px;
+    }
+
+    .page-info {
+        width: 100%;
+        text-align: center;
+        margin: 5px 0;
+    }
+}
     </style>
 </head>
 <body>
@@ -242,19 +339,40 @@ h2 {
     <h1>Booking and Lead Management</h1>
 
     <div class="tab">
+        <button class="tablinks active" onclick="openTab(event, 'AllEvents')">All Events</button>
         <button class="tablinks Bookings" onclick="openTab(event, 'Bookings')" id="defaultOpen">Bookings</button>
         <button class="tablinks Leads" onclick="openTab(event, 'Leads')">Leads</button>
         <button class="tablinks Create" onclick="openTab(event, 'Create')">Create</button>
         <button class="tablinks" id="authTab" onclick="openTab(event, 'Auth')">Authenticate</button>
+        <button onclick="logout()">Logout</button>
     </div>
+
+    <div id="AllEvents" class="tabcontent" style="display: block;">
+      <div id="AllEventsThree"></div>
+      <div id="allEvents"></div>
+      <div id="AllEventsTwo"></div>
+    </div>
+
     <div id="Bookings" class="tabcontent">
+      <div id="bookingsFilters">
+        <label>
+          <input type="checkbox" id="todayBookings"> Show only today's bookings
+        </label>
+        <label>
+          <input type="checkbox" id="tomorrowBookings"> Show only tomorrow's bookings
+        </label>
+      </div>
+      <div id="BookingsThree"></div>
       <div id="events">
       </div>
+      <div id="BookingsTwo"></div>
   </div>
 
   <div id="Leads" class="tabcontent">
+      <div id="LeadsThree"></div>
       <div id="leads">
       </div>
+      <div id="LeadsTwo"></div>
   </div>
 
   <div id="Create" class="tabcontent">
@@ -288,7 +406,110 @@ h2 {
 </div>
 </div>
     <script>
+      const ITEMS_PER_PAGE = 30;
+let currentPage = {
+    allEvents: 1,
+    bookings: 1,
+    leads: 1
+};
+let currentTab = 'AllEvents'; // Default to 'AllEvents'
 
+function findTodaysBooking(items) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    for (let i = 0; i < items.length; i++) {
+        const itemDate = new Date(items[i].start_time);
+        itemDate.setHours(0, 0, 0, 0);
+        
+        if (itemDate.getTime() === today.getTime()) {
+            return {
+                item: items[i],
+                index: i
+            };
+        }
+    }
+    return null;
+}
+// New function to handle page changes
+function changePage(containerId, direction) {
+    const items = containerId === 'allEvents' ? allEvents : containerId === 'events' ? events : leads;
+    const totalPages = Math.ceil(items.length / ITEMS_PER_PAGE);
+    
+    if (direction === 'next' && currentPage[containerId] < totalPages) {
+        currentPage[containerId]++;
+    } else if (direction === 'prev' && currentPage[containerId] > 1) {
+        currentPage[containerId]--;
+    }
+    
+    displayItems(items, containerId);
+}
+
+// New function to update pagination information
+function updatePaginationInfo(containerId, totalItems) {
+    const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE);
+    const paginationInfo = document.getElementById(`${containerId}Page`);
+    if (paginationInfo) {
+        paginationInfo.textContent = `Page ${currentPage[containerId]} of ${totalPages}`;
+    }
+}
+
+// Modify your existing functions to work with pagination
+
+function displayEvents() {
+  console.log(events,"!!!!!!!!!!!!!")
+    displayItems(events, 'events');
+}
+
+function displayAllEvents() {
+  console.log(allEvents,"!!!!!!!!!!!!!")
+    displayItems(allEvents, 'allEvents');
+}
+
+function displayLeads() {
+  console.log(leads,"!!!!!!!!!!!!!")
+    displayItems(leads, 'leads');
+}
+
+              async function checkAuthAndRedirect() {
+            try {
+                const response = await fetch('/api/auth-status');
+                const data = await response.json();
+                if (!data.isAuthenticated) {
+                    window.location.href = '/login';
+                }
+            } catch (error) {
+                console.error('Error checking authentication status:', error);
+                window.location.href = '/login';
+            }
+        }
+        
+        function scrollToTodaysBookings() {
+            const today = new Date().toISOString().split('T')[0]; // Get today's date in YYYY-MM-DD format
+            const bookings = document.querySelectorAll('#events .event');
+            let firstTodayBooking = null;
+
+            for (const booking of bookings) {
+                const startTimeInput = booking.querySelector('input[name="start_time"]');
+                if (startTimeInput && startTimeInput.value.startsWith(today)) {
+                    firstTodayBooking = booking;
+                    break;
+                }
+            }
+            if (firstTodayBooking) {
+                firstTodayBooking.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+                alert('No bookings found for today.');
+            }
+        }
+
+       function logout() {
+            fetch('/logout')
+                .then(() => {
+                    window.location.href = '/login';
+                })
+                .catch(error => console.error('Logout error:', error));
+        }
       // Check auth status when the page loads
 document.addEventListener('DOMContentLoaded', function() {
     checkAuthStatus();
@@ -302,6 +523,22 @@ document.addEventListener('DOMContentLoaded', function() {
     if (clearButton) {
         clearButton.addEventListener('click', clearForm);
     }
+    const todayCheckbox = document.getElementById('todayBookings');
+    const tomorrowCheckbox = document.getElementById('tomorrowBookings');
+
+    todayCheckbox.addEventListener('change', function() {
+        if (this.checked) {
+            tomorrowCheckbox.checked = false;
+        }
+        fetchAllItems();
+    });
+
+    tomorrowCheckbox.addEventListener('change', function() {
+        if (this.checked) {
+            todayCheckbox.checked = false;
+        }
+        fetchAllItems();
+    });
 });
         let isAuthenticated = false;
         let informationrequested=false
@@ -311,6 +548,7 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('authTab').style.display = isAuthenticated ? 'none' : 'inline';
 
         function openTab(evt, tabName) {
+    currentTab = tabName;
     var i, tabcontent, tablinks;
     tabcontent = document.getElementsByClassName("tabcontent");
     for (i = 0; i < tabcontent.length; i++) {
@@ -326,7 +564,16 @@ document.addEventListener('DOMContentLoaded', function() {
     } else {
         document.querySelector(`.tablinks[onclick="openTab(event, '${tabName}')"]`).className += " active";
     }
+
+    // Reset current page for each tab type
+    currentPage.allEvents = 1;
+    currentPage.bookings = 1;
+    currentPage.leads = 1;
+
+    // Fetch and display the appropriate items
+    fetchAllItems();
 }
+
 
         async function parseEventDescription() {
           if (!isAuthenticated) {
@@ -497,49 +744,89 @@ function clearForm() {
     document.getElementById('create-form').reset();
 }
 
-
 async function fetchAllItems() {
-  if (!isAuthenticated) {
+  await checkAuthAndRedirect();
+    if (!isAuthenticated) {
         alert('Please authenticate with Google Calendar first.');
         openTab(null, 'Auth');
         return;
     }
     try {
-        const bookingsresponse = await fetch(server+'/api/bookings');
-        if (!bookingsresponse.ok) {
-            throw new Error('Failed to fetch bookings');
+        const bookingsResponse = await fetch(server+'/api/bookings');
+        const leadsResponse = await fetch(server+'/api/leads');
+        
+        if (bookingsResponse.status === 401 || leadsResponse.status === 401) {
+                    window.location.href = '/login';
+                    return;
+                }
+
+        if (!bookingsResponse.ok || !leadsResponse.ok) {
+            throw new Error('Failed to fetch items');
         }
-        const leadsresponse = await fetch(server+'/api/leads');
-        if (!leadsresponse.ok) {
-            throw new Error('Failed to fetch bookings');
+        
+        let bookings = await bookingsResponse.json();
+        let leads = await leadsResponse.json();
+        bookings=bookings.data.map(item => ({...item, type: 'Booking'}))
+        leads=leads.data.map(item => ({...item, type: 'Lead'}))
+        console.log(leads, "leads");
+        console.log(bookings, "bookings");
+        
+        // Combine bookings and leads for the "All Events" tab
+        const allEvents = [
+            ...bookings,
+            ...leads
+        ];
+        
+        // Sort all events chronologically
+        bookings.sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
+        leads.sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
+        allEvents.sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
+        
+        switch (currentTab) {
+            case 'AllEvents':
+                displayItems({type: "AllEvents", data: allEvents});
+                break;
+            case 'Bookings':
+                displayItems({type: "Bookings", data: bookings});
+                break;
+            case 'Leads':
+                displayItems({type: "Leads", data: leads});
+                break;
+            default:
+                console.error('Unknown tab:', currentTab);
         }
-          leads = await leadsresponse.json();
-          bookings = await bookingsresponse.json();
-        console.log(leads,"leads")
-        console.log(bookings,"bookings")
-        displayItems(bookings);
-        displayItems(leads);
     } catch (error) {
         console.error('Error fetching Items:', error);
+        document.getElementById('allEvents').innerHTML = '<p>Error loading events. Please try again later.</p>';
         document.getElementById('events').innerHTML = '<p>Error loading bookings. Please try again later.</p>';
         document.getElementById('leads').innerHTML = '<p>Error loading leads. Please try again later.</p>';
     }
 }
 
+async function getConflictingBookingsInfo(bookingIds, conflictType) {
+    if (!bookingIds) return '';
 
-function getConflictingBookingsInfo(ids, type) {
-    const idList = ids.split(',');
-    let infoList = [];
-    
-    if (type === 'overlap') {
-        infoList = idList.map(id => getBookingInfo(id));
-    } else if (type === 'travel') {
-        for (let i = 0; i < idList.length; i += 2) {
-            infoList.push(getBookingInfo(idList[i], idList[i + 1]));
+    // Ensure bookingIds is always an array
+    const ids = Array.isArray(bookingIds) ? bookingIds : [bookingIds];
+
+    if (ids.length === 0) return '';
+
+    try {
+        const response = await fetch(server + '/api/bookings');
+        if (!response.ok) {
+            throw new Error('Failed to fetch bookings');
         }
+        const bookings = await response.json();
+
+        return ids.map(id => {
+            const booking = bookings.data.find(b => b.id === id);
+            if (!booking) return '';
+            return `${booking.event_name} on ${new Date(booking.start_time).toLocaleDateString()} at ${new Date(booking.start_time).toLocaleTimeString()}`;
+        }).filter(Boolean).join(', ');
+    } catch (error) {
+        console.error('Error fetching conflicting bookings:', error);
+        return '';
     }
-    
-    return infoList.join('<br>');
 }
 
 function getBookingInfo(id, travelTime = null) {
@@ -559,64 +846,110 @@ function getBookingInfo(id, travelTime = null) {
     }
 }
 
+async function displayItems(items, containerId) {
+  console.log(items.data,"LOGGING ITEMS")
+    let eventsContainer;
+    let eventsOuterContainer;
+    let eventsOuterContainerTwo;
 
-// Fetch all bookings when the program opens
-async function displayItems(items, isFullUpdate = true) {
-  let eventsContainer;
-  let type = items.type;
-  if (type == "Bookings") {
-    eventsContainer = document.getElementById('events');
-  }
-  if (type == "Leads") {
-    eventsContainer = document.getElementById('leads');
-  }
-  if (!eventsContainer) {
-    console.error("Events container not found!");
-    return;
-  }
-  
-  if (isFullUpdate) {
+    let type = items.type;
+    if (type === "Bookings") {
+        eventsContainer = document.getElementById('events');
+        eventsOuterContainer = document.getElementById('BookingsThree');
+        eventsOuterContainerTwo = document.getElementById('BookingsTwo');
+    } else if (type === "Leads") {
+        eventsContainer = document.getElementById('leads');
+        eventsOuterContainer = document.getElementById('LeadsThree');
+        eventsOuterContainerTwo = document.getElementById('LeadsTwo');
+    } else if (type === "AllEvents") {
+        eventsContainer = document.getElementById('allEvents');
+        eventsOuterContainer = document.getElementById('AllEventsThree');
+        eventsOuterContainerTwo = document.getElementById('AllEventsTwo');
+    }
+    eventsOuterContainer.innerHTML = '';
+    eventsOuterContainerTwo.innerHTML = '';
+    console.log(`Displaying ${items.data.length} ${type}`,items);
+    
+    // Pagination logic
+    const totalItems = items.data.length;
+    const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE);
+
+    const todayFilter = document.getElementById('todayBookings').checked;
+    const tomorrowFilter = document.getElementById('tomorrowBookings').checked;
+
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const filteredItems = items.data.filter(item => {
+        const itemDate = new Date(item.start_time);
+        if (todayFilter) {
+            return itemDate.getDate() === today.getDate() &&
+                   itemDate.getMonth() === today.getMonth() &&
+                   itemDate.getFullYear() === today.getFullYear();
+        } else if (tomorrowFilter) {
+            return itemDate.getDate() === tomorrow.getDate() &&
+                   itemDate.getMonth() === tomorrow.getMonth() &&
+                   itemDate.getFullYear() === tomorrow.getFullYear();
+        }
+        return true;
+    });
+    
+    // Get or initialize the current page
+    if (!window.currentPage) {
+        window.currentPage = {};
+    }
+    if (!window.currentPage[containerId]) {
+        window.currentPage[containerId] = 1;
+    }
+    
+    const currentPage = window.currentPage[containerId];
+    
+    // Calculate start and end indices for the current page
+    const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
+    const endIndex = Math.min(startIndex + ITEMS_PER_PAGE, totalItems);
+    
+    // Clear the container
     eventsContainer.innerHTML = '';
-  }
-  
-  const now = new Date();
-  items = items.data;
-  console.log(items);
-  
-  for (const item of items) {
-    let eventElement = document.getElementById(`event-${item.id}`);
-    if (!eventElement) {
-      eventElement = document.createElement('div');
-      eventElement.id = `event-${item.id}`;
-      eventElement.className = 'event';
-      eventsContainer.appendChild(eventElement);
-    }
-    
-    const startTime = new Date(item.start_time);
-    const endTime = new Date(item.end_time);
-    const oneWeekFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-    
-    function isValidEmail(email) {
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      return emailRegex.test(email);
-    }
+    eventsOuterContainer.appendChild(createPaginationControls());
+    eventsOuterContainerTwo.appendChild(createPaginationControls());
 
-    let hasValidEmailAddress = item.email_address && isValidEmail(item.email_address);
+    const itemsData = filteredItems;
+    console.log(itemsData.length, "itemsdata length");
 
-    // Pre-compute the conflicting bookings info
-    let overlapInfo = '';
-    let travelTimeInfo = '';
-    if (type === "Leads") {
-      if (item.overlapping_booking_ids) {
-        overlapInfo = await getConflictingBookingsInfo(item.overlapping_booking_ids, 'overlap');
-      }
-      if (item.insufficient_travel_time_booking_ids) {
-        travelTimeInfo = await getConflictingBookingsInfo(item.insufficient_travel_time_booking_ids, 'travel');
-      }
-    }
+    // Only iterate over items for the current page
+    for (let i = startIndex; i < endIndex; i++) {
+        const item = itemsData[i];
+        let eventElement = document.createElement('div');
+        eventElement.id = `event-${item.id}`;
+        eventElement.className = 'event';
 
-    eventElement.innerHTML = `
-    <h3>${item.event_name || item.customer_name || 'Untitled Event'}</h3>
+        const startTime = new Date(item.start_time);
+        const endTime = new Date(item.end_time);
+        const oneWeekFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+        
+        function isValidEmail(email) {
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            return emailRegex.test(email);
+        }
+
+        let hasValidEmailAddress = item.email_address && isValidEmail(item.email_address);
+
+        // Pre-compute the conflicting bookings info
+        let overlapInfo = '';
+        let travelTimeInfo = '';
+        if (type === "Leads" || (type === "AllEvents" && item.type === "Lead")) {
+            if (item.overlapping_booking_ids) {
+                overlapInfo = await getConflictingBookingsInfo(item.overlapping_booking_ids, 'overlap');
+            }
+            if (item.insufficient_travel_time_booking_ids) {
+                travelTimeInfo = await getConflictingBookingsInfo(item.insufficient_travel_time_booking_ids, 'travel');
+            }
+        }
+        console.log(item.event_name)
+        eventElement.innerHTML = `
+    <h3>${item.type} ${item.event_name || item.customer_name || 'Untitled Event'}</h3>
     <form id="form-${item.id}">
         <label>Event Name: <input type="text" name="event_name" value="${item.event_name || ''}"></label>
         <label>Customer Name: <input type="text" name="customer_name" value="${item.customer_name || ''}"></label>
@@ -626,6 +959,7 @@ async function displayItems(items, isFullUpdate = true) {
         <label>Email Address: <input type="email" name="email_address" value="${item.email_address || ''}"></label>
         <label>Phone Number: <input type="tel" name="phone_number" value="${item.phone_number || ''}"></label>
         <label>Address: <input type="text" name="address" value="${item.address || ''}"></label>
+        ${item.address ? `<button type="button" class="map-button" onclick="window.open('https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item.address)}', '_blank')">View on Map</button>` : ''}
         <label>Price: <input type="number" name="price" value="${item.price || 0}" step="0.01"></label>
         ${type == "Bookings" ? `<label>Roving or Show or Both: <input type="text" name="roving_or_show_both" value="${item.roving_or_show_or_both || ''}"></label>` : ''}
         ${type == "Leads" ? `
@@ -679,7 +1013,8 @@ async function displayItems(items, isFullUpdate = true) {
         ` : ''}
         <button id="delete-${item.id}" class="request-info">Delete</button>
     </form>
-    `
+`       
+eventsContainer.appendChild(eventElement);
 
     document.getElementById(`form-${item.id}`).addEventListener('submit', (e) => {
       e.preventDefault();
@@ -950,18 +1285,40 @@ console.log('Converting lead to booking, created google event', result);
         });
       }
      }
-
     }
   }
+      // Add pagination controls
+      function createPaginationControls() {
+        const paginationControls = document.createElement('div');
+        paginationControls.className = 'pagination-controls';
+        paginationControls.innerHTML = `
+            <button class="pagination-button" id="prevPage" ${currentPage === 1 ? 'disabled' : ''}>Previous</button>
+            <span class="page-info">Page ${currentPage} of ${totalPages}</span>
+            <button class="pagination-button" id="nextPage" ${currentPage === totalPages ? 'disabled' : ''}>Next</button>
+        `;
+        return paginationControls;
+    }
 
-  if (isFullUpdate) {
-    Array.from(eventsContainer.children).forEach(child => {
-      const id = child.id.replace('event-', '');
-      if (!items.some(booking => booking.id === id)) {
-        eventsContainer.removeChild(child);
-      }
+    // Clear the container
+    // Add top pagination controls
+
+    eventsContainer.querySelectorAll('#prevPage').forEach(button => {
+        button.addEventListener('click', () => {
+            if (currentPage > 1) {
+                window.currentPage[containerId]--;
+                displayItems(items, containerId);
+            }
+        });
     });
-  }
+
+    eventsContainer.querySelectorAll('#nextPage').forEach(button => {
+        button.addEventListener('click', () => {
+            if (currentPage < totalPages) {
+                window.currentPage[containerId]++;
+                displayItems(items, containerId);
+            }
+        });
+    });
 }
 
 async function updateBookingInDatabase(booking) {
