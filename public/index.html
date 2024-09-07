@@ -91,6 +91,20 @@ h2 {
   margin-bottom: 20px;
 }
 
+#openRouteMap {
+    background-color: #4CAF50;
+    border: none;
+    color: white;
+    padding: 5px 10px;
+    text-align: center;
+    text-decoration: none;
+    display: inline-block;
+    font-size: 14px;
+    margin: 4px 2px;
+    cursor: pointer;
+    border-radius: 4px;
+}
+
 .tab button {
   background-color: var(--dark-green);
   color: white;
@@ -361,6 +375,9 @@ h2 {
         <label>
           <input type="checkbox" id="tomorrowBookings"> Show only tomorrow's bookings
         </label>
+        <div id="routeMapButton" style="display: none;">
+          <button id="openRouteMap">View Today's Route on Google Maps</button>
+        </div>
       </div>
       <div id="BookingsThree"></div>
       <div id="events">
@@ -406,6 +423,7 @@ h2 {
 </div>
 </div>
     <script>
+      let filteredBookings = [];
       const ITEMS_PER_PAGE = 30;
 let currentPage = {
     allEvents: 1,
@@ -433,6 +451,7 @@ function findTodaysBooking(items) {
 }
 // New function to handle page changes
 function changePage(containerId, direction) {
+    console.log("changing page!");
     const items = containerId === 'allEvents' ? allEvents : containerId === 'events' ? events : leads;
     const totalPages = Math.ceil(items.length / ITEMS_PER_PAGE);
     
@@ -445,7 +464,6 @@ function changePage(containerId, direction) {
     displayItems(items, containerId);
 }
 
-// New function to update pagination information
 function updatePaginationInfo(containerId, totalItems) {
     const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE);
     const paginationInfo = document.getElementById(`${containerId}Page`);
@@ -453,24 +471,6 @@ function updatePaginationInfo(containerId, totalItems) {
         paginationInfo.textContent = `Page ${currentPage[containerId]} of ${totalPages}`;
     }
 }
-
-// Modify your existing functions to work with pagination
-
-function displayEvents() {
-  console.log(events,"!!!!!!!!!!!!!")
-    displayItems(events, 'events');
-}
-
-function displayAllEvents() {
-  console.log(allEvents,"!!!!!!!!!!!!!")
-    displayItems(allEvents, 'allEvents');
-}
-
-function displayLeads() {
-  console.log(leads,"!!!!!!!!!!!!!")
-    displayItems(leads, 'leads');
-}
-
               async function checkAuthAndRedirect() {
             try {
                 const response = await fetch('/api/auth-status');
@@ -483,25 +483,6 @@ function displayLeads() {
                 window.location.href = '/login';
             }
         }
-        
-        function scrollToTodaysBookings() {
-            const today = new Date().toISOString().split('T')[0]; // Get today's date in YYYY-MM-DD format
-            const bookings = document.querySelectorAll('#events .event');
-            let firstTodayBooking = null;
-
-            for (const booking of bookings) {
-                const startTimeInput = booking.querySelector('input[name="start_time"]');
-                if (startTimeInput && startTimeInput.value.startsWith(today)) {
-                    firstTodayBooking = booking;
-                    break;
-                }
-            }
-            if (firstTodayBooking) {
-                firstTodayBooking.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            } else {
-                alert('No bookings found for today.');
-            }
-        }
 
        function logout() {
             fetch('/logout')
@@ -511,8 +492,8 @@ function displayLeads() {
                 .catch(error => console.error('Logout error:', error));
         }
       // Check auth status when the page loads
-document.addEventListener('DOMContentLoaded', function() {
-    checkAuthStatus();
+document.addEventListener('DOMContentLoaded', async function() {
+    await checkAuthStatus();
     const createForm = document.getElementById('create-form');
     const clearButton = document.getElementById('clear');
 
@@ -523,10 +504,26 @@ document.addEventListener('DOMContentLoaded', function() {
     if (clearButton) {
         clearButton.addEventListener('click', clearForm);
     }
+
+    document.getElementById('openRouteMap').addEventListener('click', function() {
+    console.log('Filtered Bookings:', filteredBookings); // Debug log
+    if (filteredBookings && filteredBookings.length > 0) {
+        const mapUrl = generateRouteMapUrl(filteredBookings);
+        if (mapUrl) {
+            window.open(mapUrl, '_blank');
+        } else {
+            alert('Unable to generate route. Please check the addresses.');
+        }
+    } else {
+        alert('No bookings found for the selected day.');
+    }
+});
+
     const todayCheckbox = document.getElementById('todayBookings');
     const tomorrowCheckbox = document.getElementById('tomorrowBookings');
 
     todayCheckbox.addEventListener('change', function() {
+      currentPage.bookings = 1;
         if (this.checked) {
             tomorrowCheckbox.checked = false;
         }
@@ -534,6 +531,7 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     tomorrowCheckbox.addEventListener('change', function() {
+      currentPage.bookings = 1;
         if (this.checked) {
             todayCheckbox.checked = false;
         }
@@ -548,6 +546,7 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('authTab').style.display = isAuthenticated ? 'none' : 'inline';
 
         function openTab(evt, tabName) {
+    console.log('Opening tab:', tabName); // Debug log
     currentTab = tabName;
     var i, tabcontent, tablinks;
     tabcontent = document.getElementsByClassName("tabcontent");
@@ -565,13 +564,12 @@ document.addEventListener('DOMContentLoaded', function() {
         document.querySelector(`.tablinks[onclick="openTab(event, '${tabName}')"]`).className += " active";
     }
 
-    // Reset current page for each tab type
-    currentPage.allEvents = 1;
-    currentPage.bookings = 1;
-    currentPage.leads = 1;
-
-    // Fetch and display the appropriate items
-    fetchAllItems();
+    // Fetch and display the appropriate items only if authenticated
+    if (isAuthenticated) {
+        fetchAllItems();
+    } else {
+        checkAuthStatus();
+    }
 }
 
 
@@ -648,10 +646,41 @@ document.getElementById('parseButton').addEventListener('click', parseEventDescr
         // Get the element with id="defaultOpen" and click on it
         document.getElementById("defaultOpen").click();
 
-        function formatDateTimeLocal(dateString) {
-  return new Date(dateString).toISOString().slice(0, 16);
-}
 
+        function formatDateTimeLocal(dateString) {
+  if (!dateString) return '';
+  
+  // Parse the input date string
+  const date = new Date(dateString);
+  
+  // Check if the date is valid
+  if (isNaN(date.getTime())) {
+    console.error('Invalid date:', dateString);
+    return '';
+  }
+  
+  // Convert to Sydney time
+  const sydneyDate = new Intl.DateTimeFormat('en-AU', {
+    timeZone: 'Australia/Sydney',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).format(date);
+  
+  // Parse the formatted date string back into a Date object
+  const [datePart, timePart] = sydneyDate.split(', ');
+  const [day, month, year] = datePart.split('/');
+  const [hour, minute] = timePart.split(':');
+  
+  // Create a new Date object in the local time zone
+  const localDate = new Date(year, month - 1, day, hour, minute);
+  
+  // Format for datetime-local input
+  return `${localDate.getFullYear()}-${(localDate.getMonth() + 1).toString().padStart(2, '0')}-${localDate.getDate().toString().padStart(2, '0')}T${localDate.getHours().toString().padStart(2, '0')}:${localDate.getMinutes().toString().padStart(2, '0')}`;
+}
 async function syncCalendar() {
   if (!isAuthenticated) {
         alert('Please authenticate with Google Calendar first.');
@@ -754,7 +783,8 @@ async function fetchAllItems() {
     try {
         const bookingsResponse = await fetch(server+'/api/bookings');
         const leadsResponse = await fetch(server+'/api/leads');
-        
+        console.log(bookingsResponse,"bookingsResponse")
+        console.log(leadsResponse,'leadsResponse')
         if (bookingsResponse.status === 401 || leadsResponse.status === 401) {
                     window.location.href = '/login';
                     return;
@@ -766,6 +796,8 @@ async function fetchAllItems() {
         
         let bookings = await bookingsResponse.json();
         let leads = await leadsResponse.json();
+        console.log(leads, "leads");
+        console.log(bookings, "bookings")
         bookings=bookings.data.map(item => ({...item, type: 'Booking'}))
         leads=leads.data.map(item => ({...item, type: 'Lead'}))
         console.log(leads, "leads");
@@ -846,6 +878,15 @@ function getBookingInfo(id, travelTime = null) {
     }
 }
 
+function generateRouteMapUrl(bookings) {
+    const baseUrl = "https://www.google.com/maps/dir/?api=1";
+    const origin = encodeURIComponent(bookings[0].address);
+    const destination = encodeURIComponent(bookings[bookings.length - 1].address);
+    const waypoints = bookings.slice(1, -1).map(booking => encodeURIComponent(booking.address)).join('|');
+    
+    return `${baseUrl}&origin=${origin}&destination=${destination}&waypoints=${waypoints}&travelmode=driving`;
+}
+
 async function displayItems(items, containerId) {
   console.log(items.data,"LOGGING ITEMS")
     let eventsContainer;
@@ -872,55 +913,102 @@ async function displayItems(items, containerId) {
     
     // Pagination logic
     const totalItems = items.data.length;
-    const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE);
 
     const todayFilter = document.getElementById('todayBookings').checked;
     const tomorrowFilter = document.getElementById('tomorrowBookings').checked;
+    if (type === "Bookings") {
+        document.getElementById('bookingsFilters').style.display = 'block';
+
+        if (todayFilter || tomorrowFilter) {
+            document.getElementById('routeMapButton').style.display = 'block';
+            document.getElementById('openRouteMap').textContent = 
+                `View ${todayFilter ? "Today's" : "Tomorrow's"} Route on Google Maps`;
+        } else {
+            document.getElementById('routeMapButton').style.display = 'none';
+        }
+    } else {
+        document.getElementById('bookingsFilters').style.display = 'none';
+        document.getElementById('routeMapButton').style.display = 'none';
+    }
 
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
-    const filteredItems = items.data.filter(item => {
-        const itemDate = new Date(item.start_time);
-        if (todayFilter) {
-            return itemDate.getDate() === today.getDate() &&
-                   itemDate.getMonth() === today.getMonth() &&
-                   itemDate.getFullYear() === today.getFullYear();
-        } else if (tomorrowFilter) {
-            return itemDate.getDate() === tomorrow.getDate() &&
-                   itemDate.getMonth() === tomorrow.getMonth() &&
-                   itemDate.getFullYear() === tomorrow.getFullYear();
+
+    if (type === "Bookings") {
+        document.getElementById('bookingsFilters').style.display = 'block';
+        
+        const todayFilter = document.getElementById('todayBookings').checked;
+        const tomorrowFilter = document.getElementById('tomorrowBookings').checked;
+
+        if (todayFilter || tomorrowFilter) {
+            const now = new Date();
+            const targetDate = todayFilter ? now : new Date(now.setDate(now.getDate() + 1));
+            
+            filteredBookings = items.data.filter(booking => {
+                const bookingDate = new Date(booking.start_time);
+                return bookingDate.toDateString() === targetDate.toDateString();
+            }).sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
+
+            document.getElementById('routeMapButton').style.display = 'block';
+            document.getElementById('openRouteMap').textContent = 
+                `View ${todayFilter ? "Today's" : "Tomorrow's"} Route on Google Maps (${filteredBookings.length} bookings)`;
+        } else {
+            filteredBookings = items.data;
+            document.getElementById('routeMapButton').style.display = 'none';
         }
-        return true;
-    });
-    
+    } else {
+        filteredBookings = items.data;
+        document.getElementById('bookingsFilters').style.display = 'none';
+        document.getElementById('routeMapButton').style.display = 'none';
+    }
     // Get or initialize the current page
-    if (!window.currentPage) {
-        window.currentPage = {};
-    }
-    if (!window.currentPage[containerId]) {
-        window.currentPage[containerId] = 1;
-    }
-    
-    const currentPage = window.currentPage[containerId];
-    
-    // Calculate start and end indices for the current page
-    const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
-    const endIndex = Math.min(startIndex + ITEMS_PER_PAGE, totalItems);
-    
+    if (!currentPage[containerId]) {
+    currentPage[containerId] = 1;
+}
+
+const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE);
+currentPage[containerId] = Math.max(1, Math.min(currentPage[containerId], totalPages));
+
+const startIndex = (currentPage[containerId] - 1) * ITEMS_PER_PAGE;
+const endIndex = Math.min(startIndex + ITEMS_PER_PAGE, totalItems);
+
     // Clear the container
     eventsContainer.innerHTML = '';
-    eventsOuterContainer.appendChild(createPaginationControls());
-    eventsOuterContainerTwo.appendChild(createPaginationControls());
+    const paginationTop = createPaginationControls(containerId, currentPage[containerId], totalPages);
+const paginationBottom = createPaginationControls(containerId, currentPage[containerId], totalPages);
 
-    const itemsData = filteredItems;
+eventsOuterContainer.innerHTML = '';
+eventsOuterContainer.appendChild(paginationTop);
+
+eventsOuterContainerTwo.innerHTML = '';
+eventsOuterContainerTwo.appendChild(paginationBottom);
+
+[paginationTop, paginationBottom].forEach(pagination => {
+    pagination.querySelector(`#prevPage-${containerId}`).addEventListener('click', () => {
+        if (currentPage[containerId] > 1) {
+            currentPage[containerId]--;
+            displayItems(items, containerId);
+        }
+    });
+
+    pagination.querySelector(`#nextPage-${containerId}`).addEventListener('click', () => {
+        if (currentPage[containerId] < totalPages) {
+            currentPage[containerId]++;
+            displayItems(items, containerId);
+        }
+    });
+});
+
+const itemsData = filteredBookings;
     console.log(itemsData.length, "itemsdata length");
 
     // Only iterate over items for the current page
     for (let i = startIndex; i < endIndex; i++) {
         const item = itemsData[i];
+        console.log(item,"ITEM")
         let eventElement = document.createElement('div');
         eventElement.id = `event-${item.id}`;
         eventElement.className = 'event';
@@ -947,7 +1035,7 @@ async function displayItems(items, containerId) {
                 travelTimeInfo = await getConflictingBookingsInfo(item.insufficient_travel_time_booking_ids, 'travel');
             }
         }
-        console.log(item.event_name)
+        console.log(item.type)
         eventElement.innerHTML = `
     <h3>${item.type} ${item.event_name || item.customer_name || 'Untitled Event'}</h3>
     <form id="form-${item.id}">
@@ -962,9 +1050,7 @@ async function displayItems(items, containerId) {
         ${item.address ? `<button type="button" class="map-button" onclick="window.open('https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item.address)}', '_blank')">View on Map</button>` : ''}
         <label>Price: <input type="number" name="price" value="${item.price || 0}" step="0.01"></label>
         ${type == "Bookings" ? `<label>Roving or Show or Both: <input type="text" name="roving_or_show_both" value="${item.roving_or_show_or_both || ''}"></label>` : ''}
-        ${type == "Leads" ? `
-        <label>Website: <input type="text" name="website" value="${item.website || ''}" step="0.01"></label>
-        ` : ''}
+        <label>Website: <input type="text" name="website" value="${item.website || ''}" step="0.01"></label>${item.website?`<a href="${item.website || '#'}" target="_blank" rel="noopener noreferrer"><button type="button">Open Website</button></a>`:``}
         ${type == "Bookings" ? `
         <div class="checkboxes-container">
             <label>Cash: <input type="checkbox" name="seen_me_before" ${item.seen_me_before ? 'checked' : ''}></label>
@@ -1287,40 +1373,17 @@ console.log('Converting lead to booking, created google event', result);
      }
     }
   }
-      // Add pagination controls
-      function createPaginationControls() {
-        const paginationControls = document.createElement('div');
-        paginationControls.className = 'pagination-controls';
-        paginationControls.innerHTML = `
-            <button class="pagination-button" id="prevPage" ${currentPage === 1 ? 'disabled' : ''}>Previous</button>
-            <span class="page-info">Page ${currentPage} of ${totalPages}</span>
-            <button class="pagination-button" id="nextPage" ${currentPage === totalPages ? 'disabled' : ''}>Next</button>
-        `;
-        return paginationControls;
-    }
-
-    // Clear the container
-    // Add top pagination controls
-
-    eventsContainer.querySelectorAll('#prevPage').forEach(button => {
-        button.addEventListener('click', () => {
-            if (currentPage > 1) {
-                window.currentPage[containerId]--;
-                displayItems(items, containerId);
-            }
-        });
-    });
-
-    eventsContainer.querySelectorAll('#nextPage').forEach(button => {
-        button.addEventListener('click', () => {
-            if (currentPage < totalPages) {
-                window.currentPage[containerId]++;
-                displayItems(items, containerId);
-            }
-        });
-    });
 }
-
+function createPaginationControls(containerId, currentPageNum, totalPages) {
+    const paginationControls = document.createElement('div');
+    paginationControls.className = 'pagination-controls';
+    paginationControls.innerHTML = `
+        <button class="pagination-button" id="prevPage-${containerId}" ${currentPageNum === 1 ? 'disabled' : ''}>Previous</button>
+        <span class="page-info">Page ${currentPageNum} of ${totalPages}</span>
+        <button class="pagination-button" id="nextPage-${containerId}" ${currentPageNum === totalPages ? 'disabled' : ''}>Next</button>
+    `;
+    return paginationControls;
+}
 async function updateBookingInDatabase(booking) {
   try {
     const response = await fetch(server+'/api/bookings/update', {
@@ -1532,21 +1595,25 @@ function initiateAuth() {
     }, false);
 }
 
-function checkAuthStatus() {
-    fetch(`${server}/auth-status`)
-        .then(response => response.json())
-        .then(data => {
-            isAuthenticated = data.isAuthenticated;
-            updateAuthUI();
-            if (!isAuthenticated) {
-                openTab(null, 'Auth');
-            } else {
-                syncCalendar();
-                fetchAllItems();
-            }
-        })
-        .catch(error => console.error('Error checking auth status:', error));
+async function checkAuthStatus() {
+    try {
+        const response = await fetch(`${server}/auth-status`);
+        const data = await response.json();
+        isAuthenticated = data.isAuthenticated;
+        updateAuthUI();
+        if (!isAuthenticated) {
+            openTab(null, 'Auth');
+        } else {
+            await syncCalendar();
+            await fetchAllItems();
+        }
+        return isAuthenticated;
+    } catch (error) {
+        console.error('Error checking auth status:', error);
+        return false;
+    }
 }
+
 function updateAuthUI() {
     const authStatus = document.getElementById('authStatus');
     const authButton = document.getElementById('authButton');

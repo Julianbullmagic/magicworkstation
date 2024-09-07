@@ -630,8 +630,13 @@ app.get('/api/bookings', async (req, res) => {
       .order('start_time', { ascending: true });
 
     if (error) throw error;
-
-    res.json({ type: 'Bookings', data });
+    const formattedData = data.map(booking => ({
+      ...booking,
+      start_time: new Date(booking.start_time).toISOString(),
+      end_time: new Date(booking.end_time).toISOString()
+    }));
+    console.log(formattedData,"bookings")
+    res.json({ type: 'Bookings', data: formattedData }); // Changed 'formattedData' to 'data'
   } catch (error) {
     console.error('Error fetching bookings:', error);
     res.status(500).json({ type: 'error', message: 'Error fetching bookings' });
@@ -655,6 +660,9 @@ app.post('/api/bookings', async (req, res) => {
       }
     }
     // Add to Google Calendar first
+    newBooking.start_time = new Date(newBooking.start_time).toISOString();
+    newBooking.end_time = new Date(newBooking.end_time).toISOString();
+
     let validatedBooking = validateBooking(newBooking);
     console.log(validatedBooking,"validated booking")
     const googleEventId = await addBookingToGoogleCalendar(validatedBooking);
@@ -784,8 +792,13 @@ app.get('/api/leads', async (req, res) => {
       .order('start_time', { ascending: true });
 
     if (error) throw error;
-
-    res.json({ type: 'Leads', data });
+    const formattedData = data.map(lead => ({
+      ...lead,
+      start_time: lead.start_time ? new Date(lead.start_time).toISOString() : null,
+      end_time: lead.end_time ? new Date(lead.end_time).toISOString() : null
+    }));
+    console.log(formattedData,"leads")
+    res.json({ type: 'Leads', data:formattedData });
   } catch (error) {
     console.error('Error fetching Leads:', error);
     res.status(500).json({ type: 'error', message: 'Error fetching Leads' });
@@ -820,10 +833,15 @@ app.post('/api/parse-event', async (req, res) => {
 });
 
 app.post('/api/leads', async (req, res) => {
-  console.log("Processing new lead");
+  console.log("Processing new lead",req.body);
   try {
-    const newLead = req.body;
-    
+    let newLead = req.body;
+    if (newLead.start_time) {
+      newLead.start_time = new Date(newLead.start_time).toISOString();
+    }
+    if (newLead.end_time) {
+      newLead.end_time = new Date(newLead.end_time).toISOString();
+    }
     if (newLead.address) {
       let geoResult = await geocodeAddress(newLead.address);
       if (geoResult) {
@@ -833,14 +851,12 @@ app.post('/api/leads', async (req, res) => {
         newLead.is_sydney = geoResult.placeName.toLowerCase().includes('sydney');
       }
     }
-    
     // Process the lead using the imported function
-    const processedLead = await processLead(newLead, supabase);
+     let processedLead = await processLead(newLead, supabase);
 
     if (!processedLead) {
-      throw new Error("Failed to process lead");
+      processedLead=newLead
     }
-
     // Insert the processed lead into the database
     const { data, error } = await supabase
       .from('Leads')
@@ -853,7 +869,7 @@ app.post('/api/leads', async (req, res) => {
       .select();
 
     if (error) throw error;
-
+console.log(data,"leads")
     res.json({ type: 'Leads', data });
   } catch (error) {
     console.error('Error processing and inserting lead:', error);
@@ -874,7 +890,12 @@ app.put('/api/leads/:id', async (req, res) => {
       .single();
 
     if (fetchError) throw fetchError;
-
+    if (updatedLead.start_time) {
+      updatedLead.start_time = new Date(updatedLead.start_time).toISOString();
+    }
+    if (updatedLead.end_time) {
+      updatedLead.end_time = new Date(updatedLead.end_time).toISOString();
+    }
     // Check if the address has changed
     if (updatedLead.address && updatedLead.address !== currentLead.address) {
       const coords = await geocodeAddress(updatedLead.address);
@@ -1195,7 +1216,7 @@ async function fetchEvents(auth) {
       if (isNaN(date.getTime())) return null;
       return date.toISOString();
     };
-  
+
     const startDateTime = formatDateTime(booking.start_time);
     const endDateTime = formatDateTime(booking.end_time);
   
@@ -1284,8 +1305,9 @@ async function deleteBookingFromGoogleCalendar(eventId) {
     if (!booking.start_time) throw new Error('Booking start time is required');
     if (!booking.end_time) throw new Error('Booking end time is required');
     
-    booking.start_time = parseDateTime(booking.start_time);
-    booking.end_time = parseDateTime(booking.end_time);
+    // Ensure dates are in ISO format
+    booking.start_time = new Date(booking.start_time).toISOString();
+    booking.end_time = new Date(booking.end_time).toISOString();
     
     return booking;
   }

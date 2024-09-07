@@ -1,7 +1,179 @@
-const axios = require('axios');
 require('dotenv').config();
-
 const MAPBOX_ACCESS_TOKEN = process.env.MAPBOX_ACCESS_TOKEN;
+const axios = require("axios");
+const { OpenAI } = require("openai");
+const clipboardy = require('node-clipboardy');
+const { createClient } = require('@supabase/supabase-js');
+const { v4: uuidv4 } = require('uuid');
+
+let openai = new OpenAI({
+  apiKey: process.env.OPENAIKEY,
+});
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+const supabaseUrl = process.env.SUPABASEURL;
+const supabaseAnonKey = process.env.SUPABASEKEY;
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+async function getChatGPTResponse(prompt) {
+  try {
+    const response = await openai.chat.completions.create({
+      messages: [{ role: "system", content: prompt }],
+      max_tokens: 180,
+      model: "gpt-4o-mini",
+    });
+    return response.choices[0].message.content;
+  } catch (error) {
+    console.error("Error getting ChatGPT response:", error);
+    throw error;
+  }
+}
+
+async function insertLead(leadData) {
+  console.log("Checking for existing lead...",leadData);
+  await sleep(4000)
+  try {
+    const { data: existingLeads, error: fetchError } = await supabase
+    .from('Leads')
+    .select('*')
+    .eq('customer_name', leadData.customer_name)
+    .eq('num', leadData.num);
+
+  if (fetchError) throw fetchError;
+
+  if (existingLeads && existingLeads.length > 0) {
+    // Update the existing lead with the new values
+    console.log("Existing lead found. Updating lead:", existingLeads[0]);
+    const { data: updatedLead, error: updateError } = await supabase
+      .from('Leads')
+      .update(leadData)
+      .eq('customer_name', leadData.customer_name)
+      .eq('num', leadData.num)
+      .select();
+
+    if (updateError) throw updateError;
+    console.log("Lead updated successfully:", updatedLead);
+    await sleep(4000);
+    return updatedLead; // Return updated lead data
+  } else {
+    // No existing lead found, insert a new one
+    console.log("No existing lead found. Inserting new lead...");
+    const { data, error } = await supabase
+      .from('Leads')
+      .insert([leadData])
+      .select();
+
+    if (error) throw error;
+    console.log("New lead inserted successfully:", data);
+    await sleep(4000);
+    return data; // Return inserted lead data
+  }
+  } catch (error) {
+    console.error("Error in lead process:", error);
+    await sleep(20000)
+    throw error;
+  }
+}
+
+(async () => {
+  try {
+    const input = clipboardy.readSync();
+    console.log("Clipboard content:", input);
+
+    const prompt = `Here is some information about an event copied from a conversation or website "${input}".
+    I would like you to respond with a JSON array containing an object or objects that each contain properties for crucial booking information.
+    Each object in the array should include properties for customer_name, email_address, phone_number, website, price, address, start_time, and end_time (in AEST).
+    Also include a short summary in the summary property. If no price is mentioned, the default should be 0. The price should only be a number, without any
+    dollar sign. The start_time and end_time should be converted to timestamptz format. There may be a url appended at the end of the information I give you,
+    I would like this to be the website property of the object you return. The information I give you may request several bookings.
+      There might be a conversation included in which the customer gives updated or more specific details about the event or events, in that
+  case you should use this more recent or specific information in your response. In other words, we need the most recent and specific details about
+  the booking or bookings. The response should be an array of javascript objects, 
+   nothing else outside this. Include no special characters in the response, essentially it is minified.`;
+
+
+    let leadData;
+    try {
+      const maxRetries = 5; // Maximum number of retries
+      let retries = 0;
+  
+      while (retries < maxRetries) {
+        sleep(5000)
+        try {
+          let chatGPTResponse = await getChatGPTResponse(prompt);
+          console.log("ChatGPT response:", chatGPTResponse);
+          sleep(5000)
+          try{
+            leadData = JSON.parse(chatGPTResponse);
+            console.log("Parsed lead data:", leadData);
+            sleep(5000)
+          }catch(err){console.log(err)}
+
+          if (Array.isArray(leadData)) {
+            break; // Exit the loop if leadData is a valid array of objects
+          } else {
+            console.error("Parsed result is not a valid array of objects or contains invalid data.");
+          }
+        } catch (parseError) {
+          console.error("Error parsing ChatGPT response:", parseError);
+          console.log("Raw response:", chatGPTResponse);
+        }
+  
+        retries++;
+        console.log(`Retrying (${retries}/${maxRetries})...`);
+        await sleep(5000); // Wait before retrying
+      }
+  
+      if (!Array.isArray(leadData) || !leadData.every(item => typeof item === 'object')) {
+        console.error("Failed to obtain valid lead data after maximum retries.");
+        return;
+      }
+  
+      // clipboardy.writeSync(chatGPTResponse);
+      await sleep(5000)
+      console.log(leadData,Array.isArray(leadData))
+      await sleep(5000)
+    } catch (parseError) {
+      console.error("Error parsing ChatGPT response:", parseError);
+      console.log("Raw response:", chatGPTResponse);
+      return;
+    }
+
+    if (Array.isArray(leadData)) {
+      let x=1
+      for (let lead of leadData){
+        console.log(lead,"Looping through leads")
+        await sleep(5000)
+        if(lead.customer_name){
+          lead.id = uuidv4();
+          lead.created_at = new Date().toISOString();
+          lead.num=x
+          console.log("Parsed lead data:", lead);
+          await sleep(5000)
+          try{
+          let processedLead = await processLead(lead,supabase);
+          let result = await insertLead(processedLead);
+        }catch(err){console.log(err)}
+          await sleep(5000)
+          x=x+1
+          if (result) {
+            console.log("lead inserted successfully:", result);
+            sleep(10000)
+          } else {
+            console.log("lead was not inserted due to existing lead for this customer.");
+          }
+        }
+      }
+    } else {
+      console.log("Parsed result is not a valid JavaScript object or missing customer_name.");
+    }
+  } catch (error) {
+    console.error("An error occurred:", error);
+  }
+})();
 
 async function processLead(lead, supabase) {
   console.log('Starting to process lead:', JSON.stringify(lead, null, 2));
