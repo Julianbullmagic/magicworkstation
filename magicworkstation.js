@@ -27,7 +27,6 @@ let oauth2Client;
 let calendar;
 let transporter;
 
-
 // Add this middleware function
 function requireAuth(req, res, next) {
   if (req.session.isAuthenticated) {
@@ -456,69 +455,120 @@ async function removeOldPaidBookings() {
 
 async function fetchAndStoreCalendarEvents() {
   return await makeCalendarApiCall(async () => {
-  const now = new Date();
-  const twoMonthsAgo = new Date(now.setMonth(now.getMonth() - 2));
+    const now = new Date();
+    const twoMonthsAgo = new Date(now.setMonth(now.getMonth() - 2));
 
-  try {
-    // First, remove old paid bookings
-    await removeOldPaidBookings();
-
-    const res = await calendar.events.list({
-      auth: oauth2Client,
-      calendarId: 'primary',
-      timeMin: twoMonthsAgo.toISOString(),
-      // No timeMax parameter, to fetch all future events
-      singleEvents: true,
-      orderBy: 'startTime',
-    });
-
-    const events = res.data.items;
-    console.log(`Fetched ${events.length} events from Google Calendar`);
-
-    for (const event of events) {
-      // Check if event already exists in Supabase
-      const { data: existingEvent } = await supabase
+    try {
+      // Fetch all existing bookings from Supabase
+      const { data: supabaseBookings, error: supabaseError } = await supabase
         .from('Bookings')
-        .select('id')
-        .eq('id', event.id)
-        .single();
+        .select('id');
 
-      if (!existingEvent) {
-        // Event doesn't exist, so add it to Supabase
-        const newBooking = {
-          id: event.id,
-          summary: event.summary || null,
-          address: event.location || null,
-          event_name: event.summary || null,
-          customer_name: event.summary || null,
-          start_time: toUTC(event.start.dateTime || event.start.date),
-          end_time: toUTC(event.end.dateTime || event.end.date),
-        };
-        if(event.location){
-          let coords = await geocodeAddress(event.location);
-          console.log(coords, "COORDS!")
-          newBooking.latitude = coords.latitude
-          newBooking.longitude = coords.longitude
-        }
+      if (supabaseError) throw supabaseError;
 
-        const { error } = await supabase
+      // Create a set to store Google Calendar event IDs
+      const calendarEventIds = new Set();
+
+      const res = await calendar.events.list({
+        auth: oauth2Client,
+        calendarId: 'primary',
+        timeMin: twoMonthsAgo.toISOString(),
+        singleEvents: true,
+        orderBy: 'startTime',
+      });
+
+      const events = res.data.items;
+      console.log(`Fetched ${events.length} events from Google Calendar`);
+
+      for (const event of events) {
+        calendarEventIds.add(event.id);  // Add the event ID to the set
+
+        // Check if event already exists in Supabase
+        const { data: existingEvent } = await supabase
           .from('Bookings')
-          .insert([newBooking]);
+          .select('*')
+          .eq('id', event.id)
+          .single();
 
-        if (error) {
-          console.error('Error inserting new booking:', error);
+        if (existingEvent) {
+          // Update booking if necessary (same as before)
+          const newAddress = event.location || null;
+          const startTime = toUTC(event.start.dateTime || event.start.date);
+          const endTime = toUTC(event.end.dateTime || event.end.date);
+
+          if (existingEvent.address !== newAddress || existingEvent.start_time !== startTime || existingEvent.end_time !== endTime) {
+            const updatedBooking = { address: newAddress, start_time: startTime, end_time: endTime };
+
+            if (newAddress) {
+              const coords = await geocodeAddress(newAddress);
+              updatedBooking.latitude = coords.latitude;
+              updatedBooking.longitude = coords.longitude;
+            }
+
+            const { error } = await supabase
+              .from('Bookings')
+              .update(updatedBooking)
+              .eq('id', event.id);
+
+            if (error) {
+              console.error('Error updating booking:', error);
+            } else {
+              console.log('Updated booking with new address or time:', event.id);
+            }
+          }
         } else {
-          console.log('New booking added:', newBooking.id);
+          // Insert new booking (same as before)
+          const newBooking = {
+            id: event.id,
+            summary: event.summary || null,
+            address: event.location || null,
+            start_time: toUTC(event.start.dateTime || event.start.date),
+            end_time: toUTC(event.end.dateTime || event.end.date),
+            customer_name: event.summary || null,
+          };
+
+          if (newBooking.address) {
+            const coords = await geocodeAddress(newBooking.address);
+            newBooking.latitude = coords.latitude;
+            newBooking.longitude = coords.longitude;
+          }
+
+          const { error } = await supabase
+            .from('Bookings')
+            .insert([newBooking]);
+
+          if (error) {
+            console.error('Error inserting new booking:', error);
+          } else {
+            console.log('New booking added:', newBooking.id);
+          }
         }
       }
-    }
 
-    console.log('Calendar sync completed');
-  } catch (error) {
-    console.error('Error fetching or storing calendar events:', error);
-  }
-})
+      // Delete bookings from Supabase that no longer exist in Google Calendar
+      const supabaseBookingIds = supabaseBookings.map((booking) => booking.id);
+      for (const bookingId of supabaseBookingIds) {
+        if (!calendarEventIds.has(bookingId)) {
+          const { error } = await supabase
+            .from('Bookings')
+            .delete()
+            .eq('id', bookingId);
+
+          if (error) {
+            console.error('Error deleting outdated booking from Supabase:', error);
+          } else {
+            console.log(`Deleted booking from Supabase that no longer exists in Google Calendar: ${bookingId}`);
+          }
+        }
+      }
+
+      console.log('Calendar sync completed');
+    } catch (error) {
+      console.error('Error fetching or storing calendar events:', error);
+    }
+  });
 }
+
 
 async function makeCalendarApiCall(apiCall) {
   try {

@@ -77,13 +77,16 @@ async function insertLead(leadData) {
     throw error;
   }
 }
+if (require.main === module) {
 
 (async () => {
   try {
     const input = clipboardy.readSync();
     console.log("Clipboard content:", input);
+    let AuDate = new Date().toLocaleString("en-US", {timeZone: "Australia/Sydney"});
 
-    const prompt = `Here is some information about an event copied from a conversation or website "${input}".
+    const prompt = `Here is some information about an event copied from a conversation or website "${input}". The date today is ${AuDate}
+    you can assume that the event being discussed is in the future relative to this date.
     I would like you to respond with a JSON array containing an object or objects that each contain properties for crucial booking information.
     Each object in the array should include properties for customer_name, email_address, phone_number, website, price, address, start_time, and end_time (in AEST).
     Also include a short summary in the summary property. If no price is mentioned, the default should be 0. The price should only be a number, without any
@@ -174,6 +177,7 @@ async function insertLead(leadData) {
     console.error("An error occurred:", error);
   }
 })();
+}
 
 async function processLead(lead, supabase) {
   console.log('Starting to process lead:', JSON.stringify(lead, null, 2));

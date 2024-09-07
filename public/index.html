@@ -424,6 +424,7 @@ h2 {
 </div>
     <script>
       let filteredBookings = [];
+      let allBookings=[]
       const ITEMS_PER_PAGE = 30;
 let currentPage = {
     allEvents: 1,
@@ -527,17 +528,39 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (this.checked) {
             tomorrowCheckbox.checked = false;
         }
-        fetchAllItems();
-    });
+        filterBookings(); 
+      });
 
     tomorrowCheckbox.addEventListener('change', function() {
       currentPage.bookings = 1;
         if (this.checked) {
             todayCheckbox.checked = false;
         }
-        fetchAllItems();
-    });
+        filterBookings();
+      });
+      function filterBookings() {
+    let filtered = allBookings;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(today.getDate() + 1);
+
+    if (todayCheckbox.checked) {
+        filtered = allBookings.filter(booking => {
+            const bookingDate = new Date(booking.start_time);
+            return bookingDate.toDateString() === today.toDateString();
+        });
+    } else if (tomorrowCheckbox.checked) {
+        filtered = allBookings.filter(booking => {
+            const bookingDate = new Date(booking.start_time);
+            return bookingDate.toDateString() === tomorrow.toDateString();
+        });
+    }
+
+    displayItems({ type: "Bookings", data: filtered });
+}
 });
+
         let isAuthenticated = false;
         let informationrequested=false
         let server="http://localhost:3000"
@@ -811,6 +834,7 @@ async function fetchAllItems() {
         
         // Sort all events chronologically
         bookings.sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
+        allBookings=bookings
         leads.sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
         allEvents.sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
         
@@ -977,7 +1001,7 @@ const endIndex = Math.min(startIndex + ITEMS_PER_PAGE, totalItems);
 
     // Clear the container
     eventsContainer.innerHTML = '';
-    const paginationTop = createPaginationControls(containerId, currentPage[containerId], totalPages);
+const paginationTop = createPaginationControls(containerId, currentPage[containerId], totalPages);
 const paginationBottom = createPaginationControls(containerId, currentPage[containerId], totalPages);
 
 eventsOuterContainer.innerHTML = '';
@@ -1003,12 +1027,9 @@ eventsOuterContainerTwo.appendChild(paginationBottom);
 });
 
 const itemsData = filteredBookings;
-    console.log(itemsData.length, "itemsdata length");
-
     // Only iterate over items for the current page
     for (let i = startIndex; i < endIndex; i++) {
         const item = itemsData[i];
-        console.log(item,"ITEM")
         let eventElement = document.createElement('div');
         eventElement.id = `event-${item.id}`;
         eventElement.className = 'event';
