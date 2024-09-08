@@ -1,6 +1,6 @@
 require('dotenv').config();
 const { createClient } = require('@supabase/supabase-js');
-const { processLead } = require('./leadCapture');
+const { processLead } = require('./leadcapture');
 
 const supabase = createClient(process.env.SUPABASEURL, process.env.SUPABASEKEY);
 

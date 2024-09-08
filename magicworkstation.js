@@ -424,28 +424,7 @@ async function updateBookingInGoogleCalendar(booking) {
   }
 })
 }
-
-async function removeOldPaidBookings() {
-  const twoMonthsAgo = new Date();
-  twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
-  
-  try {
-    const { data, error } = await supabase
-      .from('Bookings')
-      .delete()
-      .lt('end_time', twoMonthsAgo.toISOString())
-      .eq('full_payment_made', true)
-      .select();
-
-    if (error) {
-      console.error('Error removing old paid bookings:', error);
-    } else {
-      console.log(`Removed ${data ? data.length : 0} old paid bookings`);
-    }
-  } catch (error) {
-    console.error('Error in removeOldPaidBookings:', error);
-  }
-}
+syncCalendar
 
 async function fetchAndStoreCalendarEvents() {
   return await makeCalendarApiCall(async () => {
@@ -1157,133 +1136,105 @@ app.use((req, res) => {
 });
 console.log("Finished route definitions");
 }
+async function removeOldPaidBookings() {
+  const twoMonthsAgo = new Date();
+  twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+  
+  try {
+    const { data, error } = await supabase
+      .from('Bookings')
+      .delete()
+      .lt('end_time', twoMonthsAgo.toISOString())
+      .eq('full_payment_made', true)
+      .select();
+
+    if (error) {
+      console.error('Error removing old paid bookings:', error);
+    } else {
+      console.log(`Removed ${data ? data.length : 0} old paid bookings`);
+    }
+  } catch (error) {
+    console.error('Error in removeOldPaidBookings:', error);
+  }
+}
 
 async function syncCalendarWithSupabase(calendarEvents) {
   await makeCalendarApiCall(async () => {
-  // Fetch all existing bookings from Supabase
-  const { data: existingBookings, error } = await supabase
-    .from('Bookings')
-    .select('*');
-
-  if (error) {
-    console.error('Error fetching existing bookings:', error);
-    return;
-  }
-
-  // Create a map of existing bookings for easy lookup
-  const bookingsMap = new Map(existingBookings.map(booking => [booking.id, booking]));
-
-  // Process each calendar event
-  for (const event of calendarEvents) {
-    const bookingData = {
-      id: event.id,
-      summary:event.summary||null,
-      event_name:event.event_name||event.summary||null,
-      customer_name: event.customer_name||event.summary||null,
-      start_time: event.start.dateTime || event.start.date,
-      end_time: event.end.dateTime || event.end.date,
-      phone_number: event.phone_number||null, 
-      address:event.address||event.location||null,
-      invoice_file_id:event.invoice_file_id||null,
-      cash:event.cash||null,
-      price: event.price || 0,
-      customer_happy:null,
-      deposit_paid:null,
-      email_address:event.email_address||null,
-      few_days_before:null,
-      microphone_needed:null,
-      review_requested:null,
-      sent_invoice:null,
-      full_payment_made:null,
-    };
-
-if ('address' in event){
-  let coords=await geocodeAddress(event.address);
-  console.log(coords,"COORDS!")
-  bookingData.latitude = coords.latitude
-  bookingData.longitude = coords.longitude
-}
-if ('cash' in event) bookingData.cash = event.cash;
-if ('customer_happy' in event) bookingData.customer_happy = event.customer_happy;
-if ('deposit_paid' in event) bookingData.deposit_paid = event.deposit_paid;
-if ('few_days_before' in event) bookingData.few_days_before = event.few_days_before;
-if ('microphone_needed' in event) bookingData.microphone_needed = event.microphone_needed;
-if ('review_requested' in event) bookingData.review_requested = event.review_requested;
-if ('sent_invoice' in event) bookingData.sent_invoice = event.sent_invoice;
-if ('full_payment_made' in event) bookingData.full_payment_made = event.full_payment_made;
-
-    if (bookingsMap.has(event.id)) {
-      // Update existing booking
-      const { error } = await supabase
-        .from('Bookings')
-        .update(bookingData)
-        .eq('id', event.id);
-
-      if (error) console.error('Error updating booking:', error);
-      bookingsMap.delete(event.id);
-    } else {
-      // Add new booking
-      const { error } = await supabase
-        .from('Bookings')
-        .insert([bookingData]);
-
-      if (error) console.error('Error inserting new booking:', error);
-    }
-  }
-
-  // Remove bookings that are no longer in the calendar or outside the time range
-  const now = new Date();
-  const twoMonthsAgo = new Date(now.setMonth(now.getMonth() - 2));
-  const twoMonthsLater = new Date(now.setMonth(now.getMonth() + 4));
-
-  for (const [id, booking] of bookingsMap) {
-    const bookingDate = new Date(booking.start_time);
-    if (bookingDate < twoMonthsAgo || bookingDate > twoMonthsLater) {
-      const { error } = await supabase
-        .from('Bookings')
-        .delete()
-        .eq('id', id);
-
-      if (error) console.error('Error deleting outdated booking:', error);
-    }
-  }
-})
-}
-
-async function fetchEvents(auth) {
-  await makeCalendarApiCall(async () => {
-    console.log('Fetching events...');
-  
+    // Define the time range
     const now = new Date();
-    const timeMin = new Date(now.setMonth(now.getMonth() - 2)).toISOString();
-    const timeMax = new Date(now.setMonth(now.getMonth() + 4)).toISOString();
-  
-    console.log('Fetching events between:', timeMin, 'and', timeMax);
-    
-    if (!calendar) {
-      console.error('Calendar object is not initialized');
-      calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+    const twoMonthsAgo = new Date(now.setMonth(now.getMonth() - 2));
+    const fourMonthsLater = new Date(now.setMonth(now.getMonth() + 6)); // 4 months from the original date
+
+    // Fetch all existing bookings from Supabase
+    const { data: existingBookings, error } = await supabase
+      .from('Bookings')
+      .select('*');
+
+    if (error) {
+      console.error('Error fetching existing bookings:', error);
+      return;
     }
-    
-    try {
-      const res = await calendar.events.list({
-        calendarId: 'primary',
-        timeMin: timeMin,
-        timeMax: timeMax,
-        singleEvents: true,
-        orderBy: 'startTime',
-      });
 
-      console.log('API Response:', res.data);
+    // Create a map of existing bookings for easy lookup
+    const bookingsMap = new Map(existingBookings.map(booking => [booking.id, booking]));
 
-      const events = res.data.items;
-      if (events.length) {
-        await syncCalendarWithSupabase(events);
-      } else {
-        console.log('No upcoming events found.');
+    // Process each calendar event within the specified time range
+    for (const event of calendarEvents) {
+      const eventStartTime = new Date(event.start.dateTime || event.start.date);
+      const eventEndTime = new Date(event.end.dateTime || event.end.date);
+
+      if (eventStartTime >= twoMonthsAgo && eventEndTime <= fourMonthsLater) {
+        const bookingData = {
+          id: event.id,
+          summary: event.summary || null,
+          event_name: event.event_name || event.summary || null,
+          customer_name: event.customer_name || event.summary || null,
+          start_time: event.start.dateTime || event.start.date,
+          end_time: event.end.dateTime || event.end.date,
+          phone_number: event.phone_number || null,
+          address: event.address || event.location || null,
+          invoice_file_id: event.invoice_file_id || null,
+          cash: event.cash || null,
+          price: event.price || 0,
+          email_address: event.email_address || null,
+          // Other fields...
+        };
+
+        if (bookingsMap.has(event.id)) {
+          // Update existing booking
+          const { error } = await supabase
+            .from('Bookings')
+            .update(bookingData)
+            .eq('id', event.id);
+
+          if (error) console.error('Error updating booking:', error);
+        } else {
+          // Add new booking
+          const { error } = await supabase
+            .from('Bookings')
+            .insert([bookingData]);
+
+          if (error) console.error('Error inserting new booking:', error);
+        }
+
+        // Remove this event from the map as it's been processed
+        bookingsMap.delete(event.id);
       }
-    } catch (error) {
-      console.error('Error fetching calendar events:', error);
+    }
+
+    // Remove Supabase bookings that are no longer in the calendar or outside the time range
+    for (const [id, booking] of bookingsMap) {
+      const bookingStartTime = new Date(booking.start_time);
+      const bookingEndTime = new Date(booking.end_time);
+
+      if (bookingEndTime < twoMonthsAgo || bookingStartTime > fourMonthsLater || booking.full_payment_made) {
+        const { error } = await supabase
+          .from('Bookings')
+          .delete()
+          .eq('id', id);
+
+        if (error) console.error('Error deleting outdated booking:', error);
+      }
     }
   });
 }
