@@ -63,10 +63,12 @@ async function main(startServer = true) {
       resave: false,
       saveUninitialized: false,
       cookie: { 
-        secure: true, // for HTTPS
-        domain: 'magicworkstation.onrender.com'
-      }    
+        secure: process.env.NODE_ENV === 'production',
+        httpOnly: true,
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+      }
     }));
+    console.log('Session middleware configured');
     // In your main function or server setup area, add these lines if they're not already present
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
@@ -617,18 +619,18 @@ function generateRoutes(){
   console.log('Generating routes...');
   app.use(express.static(path.join(__dirname, 'public')));
 
-app.post('/login', (req, res) => {
-  const { password } = req.body;
-  console.log('Received password:', password); // For debugging, remove in production
-  console.log('Expected password:', process.env.APP_PASSWORD); // For debugging, remove in production
-  
-  if (password === process.env.APP_PASSWORD) {
-    req.session.isAuthenticated = true;
-    res.redirect('/');
-  } else {
-    res.status(401).send('Invalid password');
-  }
-});
+  app.post('/login', (req, res) => {
+    const { password } = req.body;
+    console.log('Login attempt');
+    if (password === process.env.APP_PASSWORD) {
+      req.session.isAuthenticated = true;
+      console.log('Login successful, session authenticated');
+      res.redirect('/');
+    } else {
+      console.log('Login failed: invalid password');
+      res.status(401).send('Invalid password');
+    }
+  });
 
 // Make sure you have this route for serving the login page
 app.get('/login', (req, res) => {
@@ -648,6 +650,7 @@ app.get('/login', (req, res) => {
 
   // Protect API routes  
   app.get('/api/auth-status', (req, res) => {
+    console.log('Auth status checked, isAuthenticated:', !!req.session.isAuthenticated);
     res.json({ isAuthenticated: !!req.session.isAuthenticated });
   });
   
@@ -662,13 +665,15 @@ app.get('/login', (req, res) => {
   
   // Modify API route protection
   app.use('/api', (req, res, next) => {
+    console.log('API route accessed:', req.path);
+    console.log('Session authenticated:', !!req.session.isAuthenticated);
     if (req.session.isAuthenticated) {
       next();
     } else {
+      console.log('Unauthorized access attempt to:', req.path);
       res.status(401).json({ error: 'Unauthorized' });
     }
   });
-  
   app.get('/auth', (req, res) => {
     const authUrl = oauth2Client.generateAuthUrl({
       access_type: 'offline',
@@ -679,17 +684,22 @@ app.get('/login', (req, res) => {
   });
 
   app.post('/api/sync-calendar', async (req, res) => {
+    console.log('Sync calendar route accessed');
+    console.log('Session authenticated:', !!req.session.isAuthenticated);
     if (syncInProgress) {
+      console.log('Sync already in progress');
       return res.status(200).json({ message: 'Calendar sync already in progress' });
     }
   
     syncInProgress = true;
     try {
+      console.log('Starting calendar sync');
       await fetchAndStoreCalendarEventsWithPauses();
+      console.log('Calendar sync completed successfully');
       res.status(200).json({ message: 'Calendar sync completed successfully' });
     } catch (error) {
-      console.error('Error syncing calendar:', error);
-      res.status(500).json({ error: 'Failed to sync calendar' });
+      console.error('Detailed error syncing calendar:', error);
+      res.status(500).json({ error: 'Failed to sync calendar', details: error.message });
     } finally {
       syncInProgress = false;
     }
