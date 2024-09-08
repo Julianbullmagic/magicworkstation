@@ -17,6 +17,8 @@ const stream = require('stream');
 const { auth } = require('googleapis/build/src/apis/abusiveexperiencereport');
 const { OpenAI } = require("openai");
 const bodyParser = require('body-parser');
+const { handleEventChange, handleEventDeletion } = require('./syncOverlaps');
+
 
 // Global variables
 let openai;
@@ -27,14 +29,6 @@ let oauth2Client;
 let calendar;
 let transporter;
 
-// Add this middleware function
-function requireAuth(req, res, next) {
-  if (req.session.isAuthenticated) {
-    next();
-  } else {
-    res.redirect('/login');
-  }
-}
 
 async function main(startServer = true) {
   try {
@@ -491,7 +485,7 @@ async function fetchAndStoreCalendarEvents() {
           .single();
 
         if (existingEvent) {
-          // Update booking if necessary (same as before)
+          // Update booking if necessary
           const newAddress = event.location || null;
           const startTime = toUTC(event.start.dateTime || event.start.date);
           const endTime = toUTC(event.end.dateTime || event.end.date);
@@ -501,8 +495,12 @@ async function fetchAndStoreCalendarEvents() {
 
             if (newAddress) {
               const coords = await geocodeAddress(newAddress);
-              updatedBooking.latitude = coords.latitude;
-              updatedBooking.longitude = coords.longitude;
+              if (coords) {
+                updatedBooking.latitude = coords.latitude;
+                updatedBooking.longitude = coords.longitude;
+              } else {
+                console.warn(`Failed to geocode address: ${newAddress}`);
+              }
             }
 
             const { error } = await supabase
@@ -517,7 +515,7 @@ async function fetchAndStoreCalendarEvents() {
             }
           }
         } else {
-          // Insert new booking (same as before)
+          // Insert new booking
           const newBooking = {
             id: event.id,
             summary: event.summary || null,
@@ -529,8 +527,12 @@ async function fetchAndStoreCalendarEvents() {
 
           if (newBooking.address) {
             const coords = await geocodeAddress(newBooking.address);
-            newBooking.latitude = coords.latitude;
-            newBooking.longitude = coords.longitude;
+            if (coords) {
+              newBooking.latitude = coords.latitude;
+              newBooking.longitude = coords.longitude;
+            } else {
+              console.warn(`Failed to geocode address: ${newBooking.address}`);
+            }
           }
 
           const { error } = await supabase
@@ -568,7 +570,6 @@ async function fetchAndStoreCalendarEvents() {
     }
   });
 }
-
 
 async function makeCalendarApiCall(apiCall) {
   try {
@@ -693,6 +694,7 @@ app.get('/api/bookings', async (req, res) => {
   }
 });
 
+
 // Updated route to create a booking
 app.post('/api/bookings', async (req, res) => {
   let newBooking = req.body;
@@ -732,6 +734,7 @@ app.post('/api/bookings', async (req, res) => {
       await deleteBookingFromGoogleCalendar(googleEventId);
       throw error;
     }
+    await handleEventChange('Bookings', data[0].id);
 
     res.status(201).json(data);
   } catch (error) {
@@ -747,6 +750,7 @@ app.delete('/api/bookings/:id', async (req, res) => {
   
   try {
     // Delete from Google Calendar
+    await handleEventDeletion('Bookings', id);
     await deleteBookingFromGoogleCalendar(id);
 
     // Delete from Supabase
@@ -755,7 +759,11 @@ app.delete('/api/bookings/:id', async (req, res) => {
       .delete()
       .eq('id', id);
 
-    if (error) throw error;
+    if (error){
+      console.log(error)
+    }else{
+      await handleEventDeletion('Bookings', id);
+    }
 
     res.json({ message: 'Booking deleted successfully' });
   } catch (error) {
@@ -764,7 +772,7 @@ app.delete('/api/bookings/:id', async (req, res) => {
   }
 });
 
-app.post('/api/bookings/update', async (req, res) => {
+app.put('/api/bookings/update', async (req, res) => {
   const updatedBooking = req.body;
   try {
     const { data: oldBooking } = await supabase
@@ -793,7 +801,7 @@ app.post('/api/bookings/update', async (req, res) => {
       .single();
     
     if (error) throw error;
-
+    await handleEventDeletion('Bookings', id);
     // Update Google Calendar
     await updateBookingInGoogleCalendar(updated);
 
@@ -918,8 +926,12 @@ app.post('/api/leads', async (req, res) => {
       }])
       .select();
 
-    if (error) throw error;
-console.log(data,"leads")
+    if (error){
+      console.log(error)
+    }
+    
+    await handleEventChange('Leads', data[0].id);
+    console.log(data,"leads")
     res.json({ type: 'Leads', data });
   } catch (error) {
     console.error('Error processing and inserting lead:', error);
@@ -939,7 +951,9 @@ app.put('/api/leads/:id', async (req, res) => {
       .eq('id', id)
       .single();
 
-    if (fetchError) throw fetchError;
+    if (fetchError){
+      console.log(fetchError)
+    }
     if (updatedLead.start_time) {
       updatedLead.start_time = new Date(updatedLead.start_time).toISOString();
     }
@@ -966,7 +980,10 @@ app.put('/api/leads/:id', async (req, res) => {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error){
+      console.log(error)
+    }
+    await handleEventChange('Leads', data[0].id);
 
     res.json(data);
   } catch (error) {
@@ -975,7 +992,29 @@ app.put('/api/leads/:id', async (req, res) => {
   }
 });
 
-// Add this route to your Express app
+app.delete('/api/leads/:id', async (req, res) => {
+  const { id } = req.params;
+  
+  try {
+    // Call handleEventDeletion before deleting the lead
+    await handleEventDeletion('Leads', id);
+
+    const { error } = await supabase
+      .from('Leads')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      console.log(error);
+      throw error;
+    }
+
+    res.json({ message: 'Lead deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting lead:', error);
+    res.status(500).json({ error: 'Failed to delete lead' });
+  }
+});
 
 app.post('/delete', async (req, res) => {
   const { bookingid, type } = req.body;
@@ -1392,26 +1431,28 @@ async function deleteBookingFromGoogleCalendar(eventId) {
       bbox = '-171.791110603,18.91619,-66.96466,71.3577635769'; // USA bounding box
     }
     // Add more conditions for other states or countries as needed
+  
     try {
       const response = await axios.get(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(address)}.json`, {
         params: {
           access_token: MAPBOX_ACCESS_TOKEN,
           country: country,
           bbox: bbox,
-          types: 'address,place'
+          types: 'address,place',
+          limit: 1
         }
       });
   
-      if (response.data.features.length > 0) {
+      if (response.data.features && response.data.features.length > 0) {
         const [longitude, latitude] = response.data.features[0].center;
         const placeName = response.data.features[0].place_name;
         return { latitude, longitude, placeName };
       } else {
-        console.error('No results found for the given address');
+        console.warn('No results found for the given address:', address);
         return null;
       }
     } catch (error) {
-      console.error('Error geocoding address:', error);
+      console.error('Error geocoding address:', address, error.message);
       return null;
     }
   }
@@ -1472,4 +1513,3 @@ module.exports = {
 };
 
 console.log("magicworkstation.js fully loaded");
-

@@ -1408,7 +1408,7 @@ function createPaginationControls(containerId, currentPageNum, totalPages) {
 async function updateBookingInDatabase(booking) {
   try {
     const response = await fetch(server+'/api/bookings/update', {
-      method: 'POST',
+      method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
       },

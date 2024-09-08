@@ -168,7 +168,21 @@ async function processLead(lead, supabase) {
   console.log('Starting to process lead:', JSON.stringify(lead, null, 2));
 
   try {
-    // Geocode the lead address
+    // Add padding to start and end times
+    const paddedStartTime = new Date(new Date(lead.start_time).getTime() - 30 * 60000); // 30 minutes before
+    const paddedEndTime = new Date(new Date(lead.end_time).getTime() + 15 * 60000); // 15 minutes after
+
+    // Update the lead object with padded times
+    lead.original_start_time = lead.start_time;
+    lead.original_end_time = lead.end_time;
+    lead.start_time = paddedStartTime.toISOString();
+    lead.end_time = paddedEndTime.toISOString();
+
+    console.log('Lead times after padding:');
+    console.log('Original start time:', lead.original_start_time);
+    console.log('Padded start time:', lead.start_time);
+    console.log('Original end time:', lead.original_end_time);
+    console.log('Padded end time:', lead.end_time);
     const leadCoords = await geocodeAddress(lead.address);
     if (!leadCoords) {
       console.error("Failed to geocode lead address:", lead.address);

@@ -22,7 +22,7 @@ async function getChatGPTResponse(prompt) {
   try {
     const response = await openai.chat.completions.create({
       messages: [{ role: "system", content: prompt }],
-      max_tokens: 180,
+      max_tokens: 400,
       model: "gpt-4o-mini",
     });
     return response.choices[0].message.content;
@@ -107,6 +107,10 @@ if (require.main === module) {
         sleep(5000)
         try {
           let chatGPTResponse = await getChatGPTResponse(prompt);
+          chatGPTResponse=chatGPTResponse.replace("`","")
+          chatGPTResponse=chatGPTResponse.replace("json","")
+          chatGPTResponse=chatGPTResponse.replace("JSON","")
+
           console.log("ChatGPT response:", chatGPTResponse);
           sleep(5000)
           try{
@@ -183,6 +187,21 @@ async function processLead(lead, supabase) {
   console.log('Starting to process lead:', JSON.stringify(lead, null, 2));
 
   try {
+    // Add padding to start and end times
+    const paddedStartTime = new Date(new Date(lead.start_time).getTime() - 30 * 60000); // 30 minutes before
+    const paddedEndTime = new Date(new Date(lead.end_time).getTime() + 15 * 60000); // 15 minutes after
+
+    // Update the lead object with padded times
+    lead.original_start_time = lead.start_time;
+    lead.original_end_time = lead.end_time;
+    lead.start_time = paddedStartTime.toISOString();
+    lead.end_time = paddedEndTime.toISOString();
+
+    console.log('Lead times after padding:');
+    console.log('Original start time:', lead.original_start_time);
+    console.log('Padded start time:', lead.start_time);
+    console.log('Original end time:', lead.original_end_time);
+    console.log('Padded end time:', lead.end_time);
     // Geocode the lead address
     const leadCoords = await geocodeAddress(lead.address);
     if (!leadCoords) {
