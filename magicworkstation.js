@@ -58,10 +58,14 @@ async function main(startServer = true) {
     };
     app.use(cors(corsOptions));
     app.use(session({
-      secret: process.env.SESSION_SECRET || 'your-secret-key',
+      secret: process.env.SESSION_SECRET,
       resave: false,
-      saveUninitialized: true,
-      cookie: { secure: process.env.NODE_ENV === 'production' }
+      saveUninitialized: false,
+      cookie: { 
+        secure: process.env.NODE_ENV === 'production',
+        httpOnly: true,
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+      }
     }));
     // In your main function or server setup area, add these lines if they're not already present
 app.use(bodyParser.urlencoded({ extended: true }));
