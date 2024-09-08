@@ -21,6 +21,9 @@ const { handleEventChange, handleEventDeletion } = require('./syncOverlaps');
 const Queue = require('better-queue');
 const { promisify } = require('util');
 const sleep = promisify(setTimeout);
+const RedisStore = require('connect-redis')(session);
+const redis = require('redis');
+const redisClient = redis.createClient(process.env.REDIS_URL);
 
 let syncInProgress = false;
 let shouldPauseSyncForOtherOperations = false;
@@ -58,16 +61,23 @@ async function main(startServer = true) {
       credentials: true
     };
     app.use(cors(corsOptions));
-    app.use(session({
-      secret: process.env.SESSION_SECRET,
-      resave: false,
-      saveUninitialized: false,
-      cookie: { 
-        secure: process.env.NODE_ENV === 'production',
-        httpOnly: true,
-        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    app.use(async (req, res, next) => {
+      const sessionId = req.cookies.sessionId; // Get session ID from cookie
+    
+      if (!sessionId) {
+        req.session = null;
+      } else {
+        const session = await getSession(sessionId);
+    
+        if (!session) {
+          req.session = null;
+        } else {
+          req.session = session;
+        }
       }
-    }));
+    
+      next();
+    });
     console.log('Session middleware configured');
     // In your main function or server setup area, add these lines if they're not already present
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -116,6 +126,53 @@ app.use(bodyParser.json());
     throw error;
   }
 }
+
+async function createSession(userId, sessionData) {
+  const expiresAt = new Date();
+  expiresAt.setHours(expiresAt.getHours() + 24); // Set expiration time (e.g., 24 hours)
+
+  const { data, error } = await supabase
+    .from('Sessions')
+    .insert([{ user_id: userId, session_data: sessionData, expires_at: expiresAt }]);
+
+  if (error) throw error;
+  return data[0];
+}
+
+async function getSession(sessionId) {
+  const { data, error } = await supabase
+    .from('Sessions')
+    .select('*')
+    .eq('id', sessionId)
+    .single();
+
+  if (error || !data || new Date(data.expires_at) < new Date()) {
+    // Session not found or expired
+    return null;
+  }
+
+  return data;
+}
+
+async function updateSession(sessionId, newSessionData) {
+  const { data, error } = await supabase
+    .from('Sessions')
+    .update({ session_data: newSessionData })
+    .eq('id', sessionId);
+
+  if (error) throw error;
+  return data[0];
+}
+
+async function deleteSession(sessionId) {
+  const { error } = await supabase
+    .from('Sessions')
+    .delete()
+    .eq('id', sessionId);
+
+  if (error) throw error;
+}
+
 
 async function getValidAccessToken() {
   try {
