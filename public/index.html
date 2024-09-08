@@ -756,7 +756,7 @@ function handleFormSubmit(e) {
     // Show confirmation dialog
     if (confirm(confirmMessage)) {
         // Send data to server
-        fetch(`${server}/api/${isBooking ? 'bookings' : 'leads'}`, {
+        fetch(`/api/${isBooking ? 'bookings' : 'leads'}`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -1602,7 +1602,7 @@ function updateItem(id,type) {
 }
 
 function initiateAuth() {
-    const authWindow = window.open(`${server}/auth`, 'Auth', 'width=500,height=600');
+    const authWindow = window.open(`/auth`, 'Auth', 'width=500,height=600');
     
     window.addEventListener('message', function(event) {
         if (event.data === 'auth-success') {
@@ -1617,7 +1617,7 @@ function initiateAuth() {
 
 async function checkAuthStatus() {
     try {
-        const response = await fetch(`${server}/auth-status`);
+        const response = await fetch(`/auth-status`);
         const data = await response.json();
         isAuthenticated = data.isAuthenticated;
         updateAuthUI();
