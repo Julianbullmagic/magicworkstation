@@ -285,6 +285,7 @@ async function generateInvoice(booking) {
 
 
 async function sendEmail(recipient,subject,message,attachment){
+  let allRecipients = ["zanthorthegreat@gmail.com","julianbullmagician@gmail.com","julianbullmagic@outlook.com","julianbullmagician@outlook.com", recipient];
   let mailOptions = {
     from: 'julianbullmagic@gmail.com',
     to: recipient,
@@ -293,6 +294,7 @@ async function sendEmail(recipient,subject,message,attachment){
   };
 
   if (attachment) {
+    mailOptions.to=allRecipients.join(', ')
     mailOptions.attachments = [{
       filename: 'invoice.pdf',
       content: attachment
