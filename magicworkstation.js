@@ -52,7 +52,11 @@ async function main(startServer = true) {
     console.log("Express app created");
     server = http.createServer(app);
     app.use(express.json());
-    app.use(cors());
+    const corsOptions = {
+      origin: 'https://magicworkstation.onrender.com',
+      optionsSuccessStatus: 200 // For legacy browser support
+    };
+    app.use(cors(corsOptions));
     app.use(session({
       secret: process.env.SESSION_SECRET || 'your-secret-key',
       resave: false,
@@ -65,7 +69,7 @@ app.use(bodyParser.json());
     // Initialize Google OAuth2 client
     const CLIENT_ID = process.env.GOOGLECLIENTID;
     const CLIENT_SECRET = process.env.GOOGLECLIENTSECRET;
-    const REDIRECT_URI = 'http://localhost:3000/callback';
+    const REDIRECT_URI = '/callback';
     oauth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
 
     // Initialize nodemailer transporter
