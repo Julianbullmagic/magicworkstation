@@ -18,7 +18,12 @@ const { auth } = require('googleapis/build/src/apis/abusiveexperiencereport');
 const { OpenAI } = require("openai");
 const bodyParser = require('body-parser');
 const { handleEventChange, handleEventDeletion } = require('./syncOverlaps');
+const Queue = require('better-queue');
+const { promisify } = require('util');
+const sleep = promisify(setTimeout);
 
+let syncInProgress = false;
+let shouldPauseSyncForOtherOperations = false;
 
 // Global variables
 let openai;
@@ -162,7 +167,7 @@ async function initializeGoogleCalendar() {
       calendar = google.calendar({ version: 'v3', auth: oauth2Client });
       console.log('Calendar object initialized:', calendar ? 'Success' : 'Failed');
       await makeCalendarApiCall(async () => {
-        await fetchAndStoreCalendarEvents();
+        // await fetchAndStoreCalendarEvents();
       });
     } else {
       throw new Error('No valid access token found');
@@ -427,26 +432,44 @@ async function updateBookingInGoogleCalendar(booking) {
 })
 }
 
-async function fetchAndStoreCalendarEvents() {
+
+async function geocodeAddress(address) {
+  const MAPBOX_ACCESS_TOKEN = process.env.MAPBOX_ACCESS_TOKEN;
+  
+  try {
+    const response = await axios.get(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(address)}.json`, {
+      params: {
+        access_token: MAPBOX_ACCESS_TOKEN,
+        country: 'AU',
+        types: 'address'
+      }
+    });
+
+    if (response.data.features && response.data.features.length > 0) {
+      const [longitude, latitude] = response.data.features[0].center;
+      const placeName = response.data.features[0].place_name;
+      return { latitude, longitude, placeName };
+    } else {
+      console.log('No results found for the given address');
+      return null;
+    }
+  } catch (error) {
+    console.error('Error geocoding address:', error);
+    return null;
+  }
+}
+
+async function fetchAndStoreCalendarEventsWithPauses() {
   return await makeCalendarApiCall(async () => {
     const now = new Date();
     const twoMonthsAgo = new Date(now.setMonth(now.getMonth() - 2));
+    const fourMonthsLater = new Date(now.setMonth(now.getMonth() + 6)); // 4 months from the original date
 
     try {
-      // Fetch all existing bookings from Supabase
-      const { data: supabaseBookings, error: supabaseError } = await supabase
-        .from('Bookings')
-        .select('id');
-
-      if (supabaseError) throw supabaseError;
-
-      // Create a set to store Google Calendar event IDs
-      const calendarEventIds = new Set();
-
       const res = await calendar.events.list({
-        auth: oauth2Client,
         calendarId: 'primary',
         timeMin: twoMonthsAgo.toISOString(),
+        timeMax: fourMonthsLater.toISOString(),
         singleEvents: true,
         orderBy: 'startTime',
       });
@@ -454,95 +477,27 @@ async function fetchAndStoreCalendarEvents() {
       const events = res.data.items;
       console.log(`Fetched ${events.length} events from Google Calendar`);
 
+      // Fetch all existing bookings from Supabase
+      const { data: existingBookings, error: supabaseError } = await supabase
+        .from('Bookings')
+        .select('*');
+
+      if (supabaseError) throw supabaseError;
+
+      const bookingsMap = new Map(existingBookings.map(booking => [booking.id, booking]));
+
       for (const event of events) {
-        calendarEventIds.add(event.id);  // Add the event ID to the set
-
-        // Check if event already exists in Supabase
-        const { data: existingEvent } = await supabase
-          .from('Bookings')
-          .select('*')
-          .eq('id', event.id)
-          .single();
-
-        if (existingEvent) {
-          // Update booking if necessary
-          const newAddress = event.location || null;
-          const startTime = toUTC(event.start.dateTime || event.start.date);
-          const endTime = toUTC(event.end.dateTime || event.end.date);
-
-          if (existingEvent.address !== newAddress || existingEvent.start_time !== startTime || existingEvent.end_time !== endTime) {
-            const updatedBooking = { address: newAddress, start_time: startTime, end_time: endTime };
-
-            if (newAddress) {
-              const coords = await geocodeAddress(newAddress);
-              if (coords) {
-                updatedBooking.latitude = coords.latitude;
-                updatedBooking.longitude = coords.longitude;
-              } else {
-                console.warn(`Failed to geocode address: ${newAddress}`);
-              }
-            }
-
-            const { error } = await supabase
-              .from('Bookings')
-              .update(updatedBooking)
-              .eq('id', event.id);
-
-            if (error) {
-              console.error('Error updating booking:', error);
-            } else {
-              console.log('Updated booking with new address or time:', event.id);
-            }
-          }
-        } else {
-          // Insert new booking
-          const newBooking = {
-            id: event.id,
-            summary: event.summary || null,
-            address: event.location || null,
-            start_time: toUTC(event.start.dateTime || event.start.date),
-            end_time: toUTC(event.end.dateTime || event.end.date),
-            customer_name: event.summary || null,
-          };
-
-          if (newBooking.address) {
-            const coords = await geocodeAddress(newBooking.address);
-            if (coords) {
-              newBooking.latitude = coords.latitude;
-              newBooking.longitude = coords.longitude;
-            } else {
-              console.warn(`Failed to geocode address: ${newBooking.address}`);
-            }
-          }
-
-          const { error } = await supabase
-            .from('Bookings')
-            .insert([newBooking]);
-
-          if (error) {
-            console.error('Error inserting new booking:', error);
-          } else {
-            console.log('New booking added:', newBooking.id);
-          }
+        if (shouldPauseSyncForOtherOperations) {
+          await sleep(100); // Small delay to allow other operations
+          shouldPauseSyncForOtherOperations = false;
         }
+
+        await processEvent(event, bookingsMap);
+        await sleep(0); // Yield to event loop
       }
 
-      // Delete bookings from Supabase that no longer exist in Google Calendar
-      const supabaseBookingIds = supabaseBookings.map((booking) => booking.id);
-      for (const bookingId of supabaseBookingIds) {
-        if (!calendarEventIds.has(bookingId)) {
-          const { error } = await supabase
-            .from('Bookings')
-            .delete()
-            .eq('id', bookingId);
-
-          if (error) {
-            console.error('Error deleting outdated booking from Supabase:', error);
-          } else {
-            console.log(`Deleted booking from Supabase that no longer exists in Google Calendar: ${bookingId}`);
-          }
-        }
-      }
+      // Remove bookings that are no longer in the calendar or outside the time range
+      await removeOutdatedBookings(bookingsMap, twoMonthsAgo, fourMonthsLater);
 
       console.log('Calendar sync completed');
     } catch (error) {
@@ -550,6 +505,81 @@ async function fetchAndStoreCalendarEvents() {
     }
   });
 }
+
+async function processEvent(event, bookingsMap) {
+  const bookingData = {
+    id: event.id,
+    summary: event.summary || null,
+    event_name: event.summary || null,
+    customer_name: event.extendedProperties?.private?.customerName || event.summary || null,
+    start_time: event.start.dateTime || event.start.date,
+    end_time: event.end.dateTime || event.end.date,
+    phone_number: event.extendedProperties?.private?.phoneNumber || null,
+    address: event.location || null,
+    email_address: event.extendedProperties?.private?.emailAddress || null,
+    price: event.extendedProperties?.private?.price || 0,
+  };
+
+  if (bookingData.address) {
+    let coords = await geocodeAddress(bookingData.address);
+    if (coords) {
+      bookingData.latitude = coords.latitude;
+      bookingData.longitude = coords.longitude;
+      bookingData.address = coords.placeName;
+    }
+  }
+
+  if (bookingsMap.has(event.id)) {
+    // Update existing booking
+    const { error } = await supabase
+      .from('Bookings')
+      .update(bookingData)
+      .eq('id', event.id);
+
+    if (error) {
+      console.error('Error updating booking:', error);
+    } else {
+      console.log('Updated booking:', event.id);
+    }
+    bookingsMap.delete(event.id);
+  } else {
+    // Add new booking
+    const { error } = await supabase
+      .from('Bookings')
+      .insert([bookingData]);
+
+    if (error) {
+      console.error('Error inserting new booking:', error);
+    } else {
+      console.log('New booking added:', event.id);
+    }
+  }
+}
+
+async function removeOutdatedBookings(bookingsMap, twoMonthsAgo, fourMonthsLater) {
+  for (const [id, booking] of bookingsMap) {
+    if (shouldPauseSyncForOtherOperations) {
+      await sleep(100); // Small delay to allow other operations
+      shouldPauseSyncForOtherOperations = false;
+    }
+
+    const bookingDate = new Date(booking.start_time);
+    if (bookingDate < twoMonthsAgo || bookingDate > fourMonthsLater) {
+      const { error } = await supabase
+        .from('Bookings')
+        .delete()
+        .eq('id', id);
+
+      if (error) {
+        console.error('Error deleting outdated booking:', error);
+      } else {
+        console.log(`Deleted outdated booking: ${id}`);
+      }
+    }
+    await sleep(0); // Yield to event loop
+  }
+}
+
 
 async function makeCalendarApiCall(apiCall) {
   try {
@@ -640,17 +670,31 @@ app.get('/login', (req, res) => {
     res.redirect(authUrl);
   });
 
-app.post('/api/sync-calendar', async (req, res) => {
-  try {
-    await makeCalendarApiCall(async () => {
-      await fetchAndStoreCalendarEvents();
-    })
-    res.status(200).json({ message: 'Calendar sync and cleanup completed successfully' });
-  } catch (error) {
-    console.error('Error syncing calendar and cleaning up bookings:', error);
-    res.status(500).json({ error: 'Failed to sync calendar and clean up bookings' });
-  }
-});
+  app.post('/api/sync-calendar', async (req, res) => {
+    if (syncInProgress) {
+      return res.status(200).json({ message: 'Calendar sync already in progress' });
+    }
+  
+    syncInProgress = true;
+    try {
+      await fetchAndStoreCalendarEventsWithPauses();
+      res.status(200).json({ message: 'Calendar sync completed successfully' });
+    } catch (error) {
+      console.error('Error syncing calendar:', error);
+      res.status(500).json({ error: 'Failed to sync calendar' });
+    } finally {
+      syncInProgress = false;
+    }
+  });
+  
+  // Middleware to set pause flag
+  app.use((req, res, next) => {
+    if (syncInProgress) {
+      shouldPauseSyncForOtherOperations = true;
+    }
+    next();
+  });
+  
 
 // Replace WebSocket routes with HTTP endpoints
 app.get('/api/bookings', async (req, res) => {
