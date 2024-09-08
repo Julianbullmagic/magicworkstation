@@ -54,7 +54,8 @@ async function main(startServer = true) {
     app.use(express.json());
     const corsOptions = {
       origin: 'https://magicworkstation.onrender.com',
-      optionsSuccessStatus: 200 // For legacy browser support
+      optionsSuccessStatus: 200,
+      credentials: true
     };
     app.use(cors(corsOptions));
     app.use(session({
@@ -62,8 +63,9 @@ async function main(startServer = true) {
       resave: false,
       saveUninitialized: false,
       cookie: { 
-        secure: process.env.NODE_ENV === 'production',
+        secure: process.env.NODE_ENV === 'production', // true in production
         httpOnly: true,
+        domain: 'magicworkstation.onrender.com',
         maxAge: 24 * 60 * 60 * 1000 // 24 hours
       }
     }));
