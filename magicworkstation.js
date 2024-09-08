@@ -63,11 +63,10 @@ async function main(startServer = true) {
       resave: false,
       saveUninitialized: false,
       cookie: { 
-        secure: process.env.NODE_ENV === 'production', // true in production
-        httpOnly: true,
-        domain: 'magicworkstation.onrender.com',
-        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+        secure: true, // for HTTPS
+        domain: 'magicworkstation.onrender.com'
       }
+    
     }));
     // In your main function or server setup area, add these lines if they're not already present
 app.use(bodyParser.urlencoded({ extended: true }));
