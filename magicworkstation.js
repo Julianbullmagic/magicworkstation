@@ -426,7 +426,6 @@ async function updateBookingInGoogleCalendar(booking) {
   }
 })
 }
-syncCalendar
 
 async function fetchAndStoreCalendarEvents() {
   return await makeCalendarApiCall(async () => {
