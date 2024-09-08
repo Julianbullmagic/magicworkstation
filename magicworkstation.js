@@ -65,8 +65,7 @@ async function main(startServer = true) {
       cookie: { 
         secure: true, // for HTTPS
         domain: 'magicworkstation.onrender.com'
-      }
-    
+      }    
     }));
     // In your main function or server setup area, add these lines if they're not already present
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -74,7 +73,7 @@ app.use(bodyParser.json());
     // Initialize Google OAuth2 client
     const CLIENT_ID = process.env.GOOGLECLIENTID;
     const CLIENT_SECRET = process.env.GOOGLECLIENTSECRET;
-    const REDIRECT_URI = '/callback';
+    const REDIRECT_URI = 'https://magicworkstation.onrender.com/callback';
     oauth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
 
     // Initialize nodemailer transporter
