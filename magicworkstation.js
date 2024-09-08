@@ -1487,7 +1487,7 @@ module.exports = {
   uploadToDrive,
   updateBookingInGoogleCalendar,
   removeOldPaidBookings,
-  fetchAndStoreCalendarEvents,
+  fetchAndStoreCalendarEventsWithPauses,
   makeCalendarApiCall,
   generateRoutes,
   geocodeAddress,
