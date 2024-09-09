@@ -19,11 +19,9 @@ const { OpenAI } = require("openai");
 const bodyParser = require('body-parser');
 const { handleEventChange, handleEventDeletion } = require('./syncOverlaps');
 const Queue = require('better-queue');
+const cookieParser = require('cookie-parser');
 const { promisify } = require('util');
 const sleep = promisify(setTimeout);
-const RedisStore = require('connect-redis')(session);
-const redis = require('redis');
-const redisClient = redis.createClient(process.env.REDIS_URL);
 
 let syncInProgress = false;
 let shouldPauseSyncForOtherOperations = false;
@@ -52,6 +50,7 @@ async function main(startServer = true) {
 
     // Initialize Express app
     app = express();
+    app.use(cookieParser());
     console.log("Express app created");
     server = http.createServer(app);
     app.use(express.json());
@@ -62,21 +61,21 @@ async function main(startServer = true) {
     };
     app.use(cors(corsOptions));
     app.use(async (req, res, next) => {
-      const sessionId = req.cookies.sessionId; // Get session ID from cookie
+      try {
+        const sessionId = req.cookies.sessionId;
     
-      if (!sessionId) {
-        req.session = null;
-      } else {
-        const session = await getSession(sessionId);
-    
-        if (!session) {
+        if (!sessionId) {
           req.session = null;
         } else {
-          req.session = session;
+          const session = await getSession(sessionId);
+          req.session = session ? { ...session.session_data } : null;
         }
-      }
     
-      next();
+        next();
+      } catch (error) {
+        console.error('Error in session middleware:', error);
+        next(error);
+      }
     });
     console.log('Session middleware configured');
     // In your main function or server setup area, add these lines if they're not already present
@@ -128,30 +127,42 @@ app.use(bodyParser.json());
 }
 
 async function createSession(userId, sessionData) {
-  const expiresAt = new Date();
-  expiresAt.setHours(expiresAt.getHours() + 24); // Set expiration time (e.g., 24 hours)
+  try {
+    const expiresAt = new Date();
+    expiresAt.setHours(expiresAt.getHours() + 24);
 
-  const { data, error } = await supabase
-    .from('Sessions')
-    .insert([{ user_id: userId, session_data: sessionData, expires_at: expiresAt }]);
+    const { data, error } = await supabase
+      .from('Sessions')
+      .insert([{ user_id: userId, session_data: sessionData, expires_at: expiresAt }])
+      .select();
 
-  if (error) throw error;
-  return data[0];
+    if (error) throw error;
+    if (!data || data.length === 0) throw new Error('No data returned from session creation');
+    return data[0];
+  } catch (error) {
+    console.error('Error creating session:', error);
+    throw error;
+  }
 }
 
 async function getSession(sessionId) {
-  const { data, error } = await supabase
-    .from('Sessions')
-    .select('*')
-    .eq('id', sessionId)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('Sessions')
+      .select('*')
+      .eq('id', sessionId)
+      .single();
 
-  if (error || !data || new Date(data.expires_at) < new Date()) {
-    // Session not found or expired
-    return null;
+    if (error) throw error;
+    if (!data || new Date(data.expires_at) < new Date()) {
+      return null;
+    }
+
+    return data;
+  } catch (error) {
+    console.error('Error getting session:', error);
+    throw error;
   }
-
-  return data;
 }
 
 async function updateSession(sessionId, newSessionData) {
@@ -172,7 +183,6 @@ async function deleteSession(sessionId) {
 
   if (error) throw error;
 }
-
 
 async function getValidAccessToken() {
   try {
@@ -676,18 +686,32 @@ function generateRoutes(){
   console.log('Generating routes...');
   app.use(express.static(path.join(__dirname, 'public')));
 
-  app.post('/login', (req, res) => {
-    const { password } = req.body;
-    console.log('Login attempt');
-    if (password === process.env.APP_PASSWORD) {
-      req.session.isAuthenticated = true;
-      console.log('Login successful, session authenticated');
-      res.redirect('/');
-    } else {
-      console.log('Login failed: invalid password');
-      res.status(401).send('Invalid password');
+  app.post('/login', async (req, res) => {
+    try {
+      const { password } = req.body;
+  
+      if (password === process.env.APP_PASSWORD) {
+        const userId = uuidv4();
+  
+        const sessionData = { isAuthenticated: true };
+        const session = await createSession(userId, sessionData);
+  
+        res.cookie('sessionId', session.id, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          maxAge: 24 * 60 * 60 * 1000
+        });
+  
+        res.redirect('/');
+      } else {
+        res.status(401).send('Invalid password');
+      }
+    } catch (error) {
+      console.error('Error in login route:', error);
+      res.status(500).send('Internal Server Error');
     }
   });
+  
 
 // Make sure you have this route for serving the login page
 app.get('/login', (req, res) => {
@@ -696,13 +720,13 @@ app.get('/login', (req, res) => {
 
 
   // Logout route
-  app.get('/logout', (req, res) => {
-    req.session.destroy(err => {
-      if (err) {
-        console.error('Error destroying session:', err);
-      }
-      res.redirect('/login');
-    });
+  app.get('/logout', async (req, res) => {
+    const sessionId = req.cookies.sessionId;
+    if (sessionId) {
+      await deleteSession(sessionId);
+      res.clearCookie('sessionId');
+    }
+    res.redirect('/login');
   });
 
   // Protect API routes  
@@ -720,17 +744,14 @@ app.get('/login', (req, res) => {
     }
   });
   
-  // Modify API route protection
-  app.use('/api', (req, res, next) => {
-    console.log('API route accessed:', req.path);
-    console.log('Session authenticated:', !!req.session.isAuthenticated);
-    if (req.session.isAuthenticated) {
-      next();
-    } else {
-      console.log('Unauthorized access attempt to:', req.path);
-      res.status(401).json({ error: 'Unauthorized' });
-    }
-  });
+app.use('/api', async (req, res, next) => {
+  if (!req.session || !req.session.isAuthenticated) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+});
+
+  
   app.get('/auth', (req, res) => {
     const authUrl = oauth2Client.generateAuthUrl({
       access_type: 'offline',

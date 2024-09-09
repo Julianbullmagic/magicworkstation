@@ -191,9 +191,7 @@ async function processLead(lead, supabase) {
     const paddedStartTime = new Date(new Date(lead.start_time).getTime() - 30 * 60000); // 30 minutes before
     const paddedEndTime = new Date(new Date(lead.end_time).getTime() + 15 * 60000); // 15 minutes after
 
-    // Update the lead object with padded times
-    lead.original_start_time = lead.start_time;
-    lead.original_end_time = lead.end_time;
+
     lead.start_time = paddedStartTime.toISOString();
     lead.end_time = paddedEndTime.toISOString();
 
