@@ -71,6 +71,16 @@ async function main(startServer = true) {
           req.session = session ? { ...session.session_data } : null;
         }
     
+        if (req.path.startsWith('/api/')) {
+          if (!req.session || !req.session.isAuthenticated) {
+            return res.status(401).json({ error: 'Unauthorized' });
+          }
+        } else if (req.path !== '/login' && req.path !== '/auth' && req.path !== '/callback') {
+          if (!req.session || !req.session.isAuthenticated) {
+            return res.redirect('/login');
+          }
+        }
+    
         next();
       } catch (error) {
         console.error('Error in session middleware:', error);
@@ -712,11 +722,9 @@ function generateRoutes(){
     }
   });
   
-
-// Make sure you have this route for serving the login page
-app.get('/login', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'login.html'));
-});
+  app.get('/login', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'login.html'));
+  });
 
 
   // Logout route
@@ -895,11 +903,18 @@ app.delete('/api/bookings/:id', async (req, res) => {
 app.put('/api/bookings/update', async (req, res) => {
   const updatedBooking = req.body;
   try {
-    const { data: oldBooking } = await supabase
+    console.log('Updating booking:', updatedBooking.id);
+
+    const { data: oldBooking, error: fetchError } = await supabase
       .from('Bookings')
       .select('*')
       .eq('id', updatedBooking.id)
       .single();
+
+    if (fetchError) {
+      console.error('Error fetching old booking:', fetchError);
+      throw fetchError;
+    }
 
     // Check if the address has changed
     if (updatedBooking.address && updatedBooking.address !== oldBooking.address) {
@@ -908,58 +923,76 @@ app.put('/api/bookings/update', async (req, res) => {
         updatedBooking.latitude = coords.latitude;
         updatedBooking.longitude = coords.longitude;
       } else {
-        console.error('Failed to geocode new address');
-        // You might want to handle this error case according to your needs
+        console.warn('Failed to geocode new address');
       }
     }
-
-    const { data: updated, error } = await supabase
+console.log(updatedBooking)
+    const { data: updated, error: updateError } = await supabase
       .from('Bookings')
       .update(updatedBooking)
       .eq('id', updatedBooking.id)
       .select()
       .single();
     
-    if (error) throw error;
-    await handleEventDeletion('Bookings', id);
-    // Update Google Calendar
-    await updateBookingInGoogleCalendar(updated);
+    if (updateError) {
+      console.error('Error updating booking in Supabase:', updateError);
+      throw updateError;
+    }
+
+    try {
+      await handleEventDeletion('Bookings', updatedBooking.id);
+      await updateBookingInGoogleCalendar(updated);
+    } catch (calendarError) {
+      console.error('Error updating Google Calendar:', calendarError);
+      // Decide if you want to throw this error or continue
+    }
 
     if (updated.sent_invoice !== oldBooking.sent_invoice && updated.sent_invoice === true) {
-      const pdfBuffer = await generateInvoice(updated);
-      const fileName = `Invoice_${updated.customer_name}_${new Date().toISOString().split('T')[0]}.pdf`;
-      const fileId = await uploadToDrive(oauth2Client, pdfBuffer, fileName, 'application/pdf');
-    
-      await sendEmailWithAttachment(
-        updated.email_address, 
-        'Invoice for Your Upcoming Magic Show', 
-        'Please find attached the invoice for your upcoming magic show.',
-        [{
-          filename: 'invoice.pdf',
-          content: pdfBuffer
-        }]
-      );
+      try {
+        const pdfBuffer = await generateInvoice(updated);
+        const fileName = `Invoice_${updated.customer_name}_${new Date().toISOString().split('T')[0]}.pdf`;
+        const fileId = await uploadToDrive(oauth2Client, pdfBuffer, fileName, 'application/pdf');
       
-      await supabase
-        .from('Bookings')
-        .update({ invoice_file_id: fileId })
-        .eq('id', updated.id);
+        await sendEmail(
+          updated.email_address, 
+          'Invoice for Your Upcoming Magic Show', 
+          'Please find attached the invoice for your upcoming magic show.',
+          pdfBuffer
+        );
+        
+        await supabase
+          .from('Bookings')
+          .update({ invoice_file_id: fileId })
+          .eq('id', updated.id);
+      } catch (invoiceError) {
+        console.error('Error processing invoice:', invoiceError);
+        // Decide if you want to throw this error or continue
+      }
     }
 
     if (updated.few_days_before !== oldBooking.few_days_before && updated.few_days_before === true) {
-      await sendEmail(updated.email_address, 'Upcoming Magic Show Booking Reminder', `Hi ${updated.customer_name},
-      
-      Your event is coming up in a few days. This is just a reminder message to double check everything is still going ahead 
-      according to the same plan.`);
+      try {
+        await sendEmail(
+          updated.email_address, 
+          'Upcoming Magic Show Booking Reminder', 
+          `Hi ${updated.customer_name},\n\nYour event is coming up in a few days. This is just a reminder message to double check everything is still going ahead according to the same plan.`
+        );
+      } catch (emailError) {
+        console.error('Error sending reminder email:', emailError);
+        // Decide if you want to throw this error or continue
+      }
     }
 
     res.json({ type: 'bookingUpdated', data: updated });
   } catch (error) {
-    console.error('Error updating booking:', error);
-    res.status(500).json({ type: 'error', message: 'Error updating booking' });
+    console.error('Detailed error updating booking:', error);
+    res.status(500).json({ 
+      type: 'error', 
+      message: 'Error updating booking', 
+      details: error.message 
+    });
   }
 });
-
 
 // Replace WebSocket routes with HTTP endpoints
 app.get('/api/leads', async (req, res) => {
@@ -1265,14 +1298,6 @@ app.post('/send-email', async (req, res) => {
   } catch (error) {
     console.error('Error sending information request:', error);
     res.status(500).json({ error: 'Failed to send information request' });
-  }
-});
-
-app.use((req, res) => {
-  if (req.session.isAuthenticated) {
-    res.redirect('/');
-  } else {
-    res.redirect('/login');
   }
 });
 console.log("Finished route definitions");

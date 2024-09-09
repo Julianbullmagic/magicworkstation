@@ -1073,7 +1073,7 @@ const itemsData = filteredBookings;
         <label>Website: <input type="text" name="website" value="${item.website || ''}" step="0.01"></label>${item.website?`<a href="${item.website || '#'}" target="_blank" rel="noopener noreferrer"><button type="button">Open Website</button></a>`:``}
         ${type == "Bookings" ? `
         <div class="checkboxes-container">
-            <label>Cash: <input type="checkbox" name="seen_me_before" ${item.seen_me_before ? 'checked' : ''}></label>
+            <label>Seen Me Before: <input type="checkbox" name="seen_me_before" ${item.seen_me_before ? 'checked' : ''}></label>
             <label>Cash: <input type="checkbox" name="cash" ${item.cash ? 'checked' : ''}></label>
             ${endTime < now ? `<label>Customer Happy: <input type="checkbox" name="customer_happy" ${item.customer_happy ? 'checked' : ''}></label>` : ''}
             ${item.sent_invoice ? `<label>Deposit Paid: <input type="checkbox" name="deposit_paid" ${item.deposit_paid ? 'checked' : ''}></label>` : ''}
@@ -1098,7 +1098,7 @@ const itemsData = filteredBookings;
         ${item.email_address ? `
             ${hasValidEmailAddress ? `
                 ${type == "Bookings" ? `
-                    ${endTime < now && !item.review_requested ? `<button id="request-review-${item.id}" class="request-info">Request Review</button>` : ''}
+                    ${endTime < now && !item.review_requested&&item.customer_happy ? `<button id="request-review-${item.id}" class="request-info">Request Review</button>` : ''}
                     ${!item.info_requested ? `<button id="request-info-${item.id}" class="request-info">Request Information</button>` : ''}
                     ${item.price && item.customer_name ?
                         (!item.sent_invoice && !item.cash ? `<button id="send-invoice-${item.id}" class="request-info">Send Invoice</button>` : '')
@@ -1566,7 +1566,7 @@ function updateItem(id,type) {
     updatedItem.website= null
     updatedItem.sent_follow_up_email= null
   }
-  if (form.seen_me_before) updatedItem.seen_me_before = form.seen_me_before;
+  if (form.seen_me_before) updatedItem.seen_me_before = form.seen_me_before.checked;
   if (form.roving_or_show_or_both) updatedItem.roving_or_show_or_both = form.roving_or_show_or_both.value;
   if (form.website) updatedItem.website = form.website.value;
   if (form.price) updatedItem.price = parseFloat(form.price.value) || 0;
@@ -1582,8 +1582,8 @@ function updateItem(id,type) {
  console.log(type,"type")
 
   // Send update to server using fetch
-  fetch(`http://localhost:3000/api/${type.toLowerCase()}/update`, {
-    method: 'POST',
+  fetch(`/api/${type.toLowerCase()}/update`, {
+    method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
     },
