@@ -346,15 +346,64 @@ h2 {
         margin: 5px 0;
     }
 }
+#searchWrapper {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  margin: 20px 0;
+}
+
+#searchContainer {
+  display: flex;
+  max-width: 600px; /* Adjust this value as needed */
+  width: 100%;
+}
+
+#searchInput {
+  flex-grow: 1;
+  padding: 8px;
+  font-size: 16px;
+  border: 1px solid #ccc;
+  border-radius: 4px 0 0 4px;
+}
+
+#searchButton, #clearSearchButton {
+  padding: 8px 15px;
+  font-size: 16px;
+  cursor: pointer;
+  background-color: #4CAF50; /* You can change this to match your color scheme */
+  color: white;
+  border: 1px solid #4CAF50;
+  transition: background-color 0.3s;
+}
+
+#searchButton {
+  border-radius: 0 4px 4px 0;
+}
+
+#clearSearchButton {
+  margin-left: 10px;
+  border-radius: 4px;
+}
+
+#searchButton:hover, #clearSearchButton:hover {
+  background-color: #45a049;
+}
     </style>
 </head>
 <body>
   <div id="html">
     <h1>Booking and Lead Management</h1>
-
+    <div id="searchWrapper">
+      <div id="searchContainer">
+        <input type="text" id="searchInput" placeholder="Search...">
+        <button id="searchButton">Search</button>
+        <button id="clearSearchButton">Clear Search</button>
+      </div>
+    </div>
     <div class="tab">
-        <button class="tablinks active" onclick="openTab(event, 'AllEvents')">All Events</button>
-        <button class="tablinks Bookings" onclick="openTab(event, 'Bookings')" id="defaultOpen">Bookings</button>
+        <button class="tablinks active" onclick="openTab(event, 'AllEvents')" id="defaultOpen">All Events</button>
+        <button class="tablinks Bookings" onclick="openTab(event, 'Bookings')">Bookings</button>
         <button class="tablinks Leads" onclick="openTab(event, 'Leads')">Leads</button>
         <button class="tablinks Create" onclick="openTab(event, 'Create')">Create</button>
         <button class="tablinks" id="authTab" onclick="openTab(event, 'Auth')">Authenticate</button>
@@ -371,6 +420,9 @@ h2 {
       <div id="bookingsFilters">
         <label>
           <input type="checkbox" id="todayBookings"> Show only today's bookings
+        </label>
+        <label>
+          <input type="checkbox" id="todayOnwardsBookings"> Show only bookings from today onwards
         </label>
         <label>
           <input type="checkbox" id="tomorrowBookings"> Show only tomorrow's bookings
@@ -450,6 +502,8 @@ function findTodaysBooking(items) {
     }
     return null;
 }
+
+
 // New function to handle page changes
 function changePage(containerId, direction) {
     console.log("changing page!");
@@ -505,7 +559,40 @@ document.addEventListener('DOMContentLoaded', async function() {
     if (clearButton) {
         clearButton.addEventListener('click', clearForm);
     }
+    const searchButton = document.getElementById('searchButton');
+    const searchInput = document.getElementById('searchInput');
 
+    function performSearch() {
+        const searchTerm = searchInput.value;
+        setSearchActive(searchTerm !== '', searchTerm);
+        if (isAuthenticated) {
+        fetchAllItems();
+    } else {
+        checkAuthStatus();
+    }
+    }
+
+    searchButton.addEventListener('click', performSearch);
+
+    searchInput.addEventListener('keyup', (event) => {
+        if (event.key === 'Enter') {
+            performSearch();
+        }
+    });
+
+    // Add a clear search functionality
+    const clearSearchButton = document.getElementById('clearSearchButton');
+    if (clearSearchButton) {
+        clearSearchButton.addEventListener('click', () => {
+            searchInput.value = '';
+            setSearchActive(false);
+            if (isAuthenticated) {
+        fetchAllItems();
+    } else {
+        checkAuthStatus();
+    }
+        });
+    }
     document.getElementById('openRouteMap').addEventListener('click', function() {
     console.log('Filtered Bookings:', filteredBookings); // Debug log
     if (filteredBookings && filteredBookings.length > 0) {
@@ -521,11 +608,22 @@ document.addEventListener('DOMContentLoaded', async function() {
 });
 
     const todayCheckbox = document.getElementById('todayBookings');
+    const todayOnwardsCheckbox = document.getElementById('todayOnwardsBookings');
     const tomorrowCheckbox = document.getElementById('tomorrowBookings');
+
+    todayOnwardsCheckbox.addEventListener('change', function() {
+      currentPage.bookings = 1;
+        if (this.checked) {
+            todayCheckbox.checked = false;
+            tomorrowCheckbox.checked = false;
+        }
+        filterBookings(); 
+      });
 
     todayCheckbox.addEventListener('change', function() {
       currentPage.bookings = 1;
         if (this.checked) {
+            todayOnwardsCheckbox.checked=false
             tomorrowCheckbox.checked = false;
         }
         filterBookings(); 
@@ -534,6 +632,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     tomorrowCheckbox.addEventListener('change', function() {
       currentPage.bookings = 1;
         if (this.checked) {
+          todayOnwardsCheckbox.checked=false
             todayCheckbox.checked = false;
         }
         filterBookings();
@@ -555,6 +654,11 @@ document.addEventListener('DOMContentLoaded', async function() {
             const bookingDate = new Date(booking.start_time);
             return bookingDate.toDateString() === tomorrow.toDateString();
         });
+    } else if (todayOnwardsCheckbox.checked) {
+        filtered = allBookings.filter(booking => {
+            const bookingDate = new Date(booking.start_time);
+            return bookingDate.toDateString() >= today.toDateString();
+        });
     }
 
     displayItems({ type: "Bookings", data: filtered });
@@ -569,6 +673,7 @@ document.addEventListener('DOMContentLoaded', async function() {
 
         function openTab(evt, tabName) {
     console.log('Opening tab:', tabName); // Debug log
+    localStorage.setItem("tab",tabName)
     currentTab = tabName;
     var i, tabcontent, tablinks;
     tabcontent = document.getElementsByClassName("tabcontent");
@@ -593,7 +698,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         checkAuthStatus();
     }
 }
-
+// DOMC
 
         async function parseEventDescription() {
           if (!isAuthenticated) {
@@ -664,10 +769,6 @@ function populateForm(data) {
 
 // Make sure to call this function when the "Parse" button is clicked
 document.getElementById('parseButton').addEventListener('click', parseEventDescription);
-
-        // Get the element with id="defaultOpen" and click on it
-        document.getElementById("defaultOpen").click();
-
 
         function formatDateTimeLocal(dateString) {
   if (!dateString) return '';
@@ -910,6 +1011,68 @@ function generateRouteMapUrl(bookings) {
     return `${baseUrl}&origin=${origin}&destination=${destination}&waypoints=${waypoints}&travelmode=driving`;
 }
 
+let isSearchActive = false;
+let currentSearchTerm = '';
+
+function setSearchActive(active, searchTerm = '') {
+    isSearchActive = active;
+    currentSearchTerm = searchTerm;
+}
+
+function isDateString(str) {
+    return !isNaN(Date.parse(str));
+}
+
+function normalizeDate(dateString) {
+    const date = new Date(dateString);
+    const aestDate = new Intl.DateTimeFormat('en-AU', {
+        timeZone: 'Australia/Sydney',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).format(date);
+    
+    // Convert DD/MM/YYYY to YYYY-MM-DD
+    const [day, month, year] = aestDate.split('/');
+    return `${day}/${month}/${year}`;
+}
+
+function applySearch(items) {
+    if (!isSearchActive || currentSearchTerm === '') {
+        return items;
+    }
+
+    const searchTermLower = currentSearchTerm.toLowerCase();
+    const searchDate = isDateString(searchTermLower) ? normalizeDate(searchTermLower) : null;
+
+    return items.filter(item => {
+        return Object.entries(item).some(([key, value]) => {
+            if (value == null) return false;
+
+            if (typeof value === 'string') {
+                if (key.includes('time') && isDateString(value)) {
+                  console.log(value,"date")
+                    // For date fields, compare the normalized date
+                    const normalizedItemDate = normalizeDate(value);
+                    console.log(normalizedItemDate,"normalizedItemDate")
+                    return normalizedItemDate.includes(searchTermLower);
+                } else {
+                    // For non-date strings, do a simple includes check
+                    return value.toLowerCase().includes(searchTermLower);
+                }
+            } else if (typeof value === 'number') {
+                // For numbers, convert to string and check
+                return value.toString().includes(searchTermLower);
+            } else if (typeof value === 'boolean') {
+                // For booleans, check if the search term is 'true' or 'false'
+                return value.toString() === searchTermLower;
+            }
+
+            return false;
+        });
+    });
+}
+
 async function displayItems(items, containerId) {
   console.log(items.data,"LOGGING ITEMS")
     let eventsContainer;
@@ -1024,8 +1187,8 @@ eventsOuterContainerTwo.appendChild(paginationBottom);
         }
     });
 });
-
-const itemsData = filteredBookings;
+let itemsData = filteredBookings;
+itemsData = applySearch(itemsData);
     // Only iterate over items for the current page
     for (let i = startIndex; i < endIndex; i++) {
         const item = itemsData[i];
@@ -1394,6 +1557,7 @@ console.log('Converting lead to booking, created google event', result);
     }
   }
 }
+
 function createPaginationControls(containerId, currentPageNum, totalPages) {
     const paginationControls = document.createElement('div');
     paginationControls.className = 'pagination-controls';
@@ -1649,7 +1813,7 @@ function updateAuthUI() {
                 tablinks[i].style.display = '';
             }
         }
-        openTab(null, 'Bookings');
+        openTab(null, localStorage.getItem("tab")||"AllEvents");
     } else {
         authStatus.textContent = 'Not authenticated';
         authStatus.style.color = 'red';

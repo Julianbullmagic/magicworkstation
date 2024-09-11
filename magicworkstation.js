@@ -1092,56 +1092,78 @@ app.post('/api/leads', async (req, res) => {
   }
 });
 
-app.put('/api/leads/:id', async (req, res) => {
-  const { id } = req.params;
+
+app.put('/api/leads/update', async (req, res) => {
   const updatedLead = req.body;
-  
   try {
+    console.log('Updated lead data:', updatedLead);
+
     // Fetch the current lead data
     const { data: currentLead, error: fetchError } = await supabase
       .from('Leads')
       .select('*')
-      .eq('id', id)
-      .single();
+      .eq('id', updatedLead.id);
 
-    if (fetchError){
-      console.log(fetchError)
+    if (fetchError) {
+      console.error('Error fetching current lead:', fetchError);
+      return res.status(500).json({ error: 'Error fetching lead data', details: fetchError });
     }
-    if (updatedLead.start_time) {
-      updatedLead.start_time = new Date(updatedLead.start_time).toISOString();
+
+    if (!currentLead || currentLead.length === 0) {
+      console.error(`No lead found with id: ${updatedLead.id}`);
+      return res.status(404).json({ error: 'Lead not found' });
     }
-    if (updatedLead.end_time) {
-      updatedLead.end_time = new Date(updatedLead.end_time).toISOString();
+
+    console.log('Current lead data:', currentLead[0]);
+
+    // Prepare the update data
+    const leadToUpdate = { ...currentLead[0], ...updatedLead };
+
+    if (leadToUpdate.start_time) {
+      leadToUpdate.start_time = new Date(leadToUpdate.start_time).toISOString();
     }
+    if (leadToUpdate.end_time) {
+      leadToUpdate.end_time = new Date(leadToUpdate.end_time).toISOString();
+    }
+
     // Check if the address has changed
-    if (updatedLead.address && updatedLead.address !== currentLead.address) {
+    if (updatedLead.address && updatedLead.address !== currentLead[0].address) {
+      console.log('Address changed, geocoding new address');
       const coords = await geocodeAddress(updatedLead.address);
       if (coords) {
-        updatedLead.latitude = coords.latitude;
-        updatedLead.longitude = coords.longitude;
+        leadToUpdate.latitude = coords.latitude;
+        leadToUpdate.longitude = coords.longitude;
+        console.log('New coordinates:', coords);
       } else {
         console.error('Failed to geocode new address for lead');
-        // You might want to handle this error case according to your needs
       }
     }
 
     // Update in Supabase
-    const { data, error } = await supabase
+    const { data: updatedData, error: updateError } = await supabase
       .from('Leads')
-      .update(updatedLead)
-      .eq('id', id)
-      .select()
-      .single();
+      .update(leadToUpdate)
+      .eq('id', updatedLead.id)
+      .select();
 
-    if (error){
-      console.log(error)
+    if (updateError) {
+      console.error('Error updating lead in Supabase:', updateError);
+      return res.status(500).json({ error: 'Failed to update lead', details: updateError });
     }
-    await handleEventChange('Leads', data[0].id);
 
-    res.json(data);
+    if (!updatedData || updatedData.length === 0) {
+      console.error('No data returned from update operation');
+      return res.status(404).json({ error: 'Lead not found or not updated' });
+    }
+
+    console.log('Lead updated successfully:', updatedData[0]);
+
+    await handleEventChange('Leads', updatedData[0].id);
+
+    res.json(updatedData[0]);
   } catch (error) {
-    console.error('Error updating lead:', error);
-    res.status(500).json({ error: 'Failed to update lead' });
+    console.error('Unexpected error updating lead:', error);
+    res.status(500).json({ error: 'Failed to update lead', details: error.message });
   }
 });
 
