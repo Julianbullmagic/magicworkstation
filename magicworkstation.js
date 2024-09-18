@@ -94,8 +94,10 @@ app.use(bodyParser.json());
     // Initialize Google OAuth2 client
     const CLIENT_ID = process.env.GOOGLECLIENTID;
     const CLIENT_SECRET = process.env.GOOGLECLIENTSECRET;
-    const REDIRECT_URI = 'https://magicworkstation.onrender.com/callback';
-    oauth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
+    const REDIRECT_URI = process.env.NODE_ENV === 'production'
+      ? 'https://magicworkstation.onrender.com/callback'
+      : 'http://localhost:3000/callback';
+          oauth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
 
     // Initialize nodemailer transporter
     transporter = nodemailer.createTransport({
@@ -572,10 +574,66 @@ async function fetchAndStoreCalendarEventsWithPauses() {
 
       if (supabaseError) throw supabaseError;
 
-      const bookingsMap = new Map(existingBookings.map(booking => [booking.id, booking]));
-      const googleEventIds = new Set(events.map(event => event.id));
-
+      // Remove duplicate Google Calendar events
+      const uniqueEvents = new Map();
+      const duplicateEventIds = new Set();
       for (const event of events) {
+        const eventKey = `${event.summary}-${event.start.dateTime || event.start.date}`;
+        if (!uniqueEvents.has(eventKey)) {
+          uniqueEvents.set(eventKey, event);
+        } else {
+          console.log(event.summary,"DUPLICATE")
+          duplicateEventIds.add(event);
+        }
+      }
+
+      // Delete duplicate Google Calendar events
+      for (const duplicateId of duplicateEventIds) {
+        try {
+          await calendar.events.delete({
+            calendarId: 'primary',
+            eventId: duplicateId.id,
+          });
+          console.log(`Deleted duplicate Google Calendar event: ${duplicateId.summary}`);
+        } catch (error) {
+          console.error(`Error deleting duplicate Google Calendar event ${duplicateId}:`, error);
+        }
+      }
+
+      // Remove duplicate Supabase bookings
+      const uniqueBookings = new Map();
+      const duplicateBookingIds = new Set();
+      for (const booking of existingBookings) {
+        const bookingKey = `${booking.customer_name}-${booking.start_time}`;
+        if (!uniqueBookings.has(bookingKey)) {
+          uniqueBookings.set(bookingKey, booking);
+        } else {
+          duplicateBookingIds.add(booking.id);
+          console.log(booking.summary)
+        }
+      }
+
+      // Delete duplicate Supabase bookings
+      for (const duplicateId of duplicateBookingIds) {
+        try {
+          const { error } = await supabase
+            .from('Bookings')
+            .delete()
+            .eq('id', duplicateId);
+          
+          if (error) throw error;
+          console.log(`Deleted duplicate Supabase booking: ${duplicateId}`);
+        } catch (error) {
+          console.error(`Error deleting duplicate Supabase booking ${duplicateId}:`, error);
+        }
+      }
+
+      // Recreate bookingsMap with unique bookings
+      const bookingsMap = new Map(Array.from(uniqueBookings.values()).map(booking => [booking.id, booking]));
+      const googleEventIds = new Set(Array.from(uniqueEvents.values()).map(event => event.id));
+
+      // Process unique events
+      for (const event of uniqueEvents.values()) {
         if (shouldPauseSyncForOtherOperations) {
           await sleep(100); // Small delay to allow other operations
           shouldPauseSyncForOtherOperations = false;
@@ -585,14 +643,16 @@ async function fetchAndStoreCalendarEventsWithPauses() {
         await sleep(0); // Yield to event loop
       }
 
-      // New functionality: Create Google Calendar events for Supabase bookings that don't have an equivalent
-      for (const [bookingId, booking] of bookingsMap.entries()) {
+      // Create Google Calendar events for Supabase bookings that don't have an equivalent
+      const bookingsToUpdate = new Set(bookingsMap.keys());
+      for (const bookingId of bookingsToUpdate) {
         if (!googleEventIds.has(bookingId)) {
           try {
+            const booking = bookingsMap.get(bookingId);
             console.log(`Creating Google Calendar event for Supabase booking: ${bookingId}`);
             const newEventId = await addBookingToGoogleCalendar(booking);
             console.log(`Created Google Calendar event with ID: ${newEventId}`);
-            
+
             // Update the Supabase booking with the new Google Calendar event ID
             const { error } = await supabase
               .from('Bookings')
@@ -605,12 +665,34 @@ async function fetchAndStoreCalendarEventsWithPauses() {
               console.log(`Updated Supabase booking ${bookingId} with new Google Calendar event ID: ${newEventId}`);
               bookingsMap.set(newEventId, { ...booking, id: newEventId });
               bookingsMap.delete(bookingId);
+              googleEventIds.add(newEventId);
             }
           } catch (error) {
             console.error(`Error creating Google Calendar event for Supabase booking ${bookingId}:`, error);
           }
         }
-        
+
+        if (shouldPauseSyncForOtherOperations) {
+          await sleep(100); // Small delay to allow other operations
+          shouldPauseSyncForOtherOperations = false;
+        }
+        await sleep(0); // Yield to event loop
+      }
+
+      // Create Supabase bookings for Google Calendar events that don't have an equivalent
+      for (const event of uniqueEvents.values()) {
+        if (!bookingsMap.has(event.id)) {
+          try {
+            console.log(`Creating Supabase booking for Google Calendar event: ${event.id}`);
+            const newBooking = await addGoogleEventToSupabase(event);
+            console.log(`Created Supabase booking with ID: ${newBooking.id}`);
+
+            bookingsMap.set(newBooking.id, newBooking);
+          } catch (error) {
+            console.error(`Error creating Supabase booking for Google Calendar event ${event.id}:`, error);
+          }
+        }
+
         if (shouldPauseSyncForOtherOperations) {
           await sleep(100); // Small delay to allow other operations
           shouldPauseSyncForOtherOperations = false;
@@ -626,6 +708,50 @@ async function fetchAndStoreCalendarEventsWithPauses() {
       console.error('Error fetching or storing calendar events:', error);
     }
   });
+}
+
+// Helper function to add a Google Calendar event to Supabase
+async function addGoogleEventToSupabase(event) {
+  const booking = {
+    id: event.id,
+    customer_name: event.summary, // Assuming the event summary contains the customer name
+    start_time: event.start.dateTime || event.start.date,
+    end_time: event.end.dateTime || event.end.date,
+    description: event.description,
+    // Add any other relevant fields from the Google Calendar event
+  };
+
+  const { data, error } = await supabase
+    .from('Bookings')
+    .insert(booking)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+// Helper function to add a Supabase booking to Google Calendar
+async function addBookingToGoogleCalendar(booking) {
+  const event = {
+    summary: booking.customer_name,
+    description: booking.description,
+    start: {
+      dateTime: booking.start_time,
+      timeZone: 'Your_Timezone', // Replace with your actual timezone
+    },
+    end: {
+      dateTime: booking.end_time,
+      timeZone: 'Your_Timezone', // Replace with your actual timezone
+    },
+  };
+
+  const response = await calendar.events.insert({
+    calendarId: 'primary',
+    resource: event,
+  });
+
+  return response.data.id;
 }
 
 async function processEvent(event, bookingsMap) {

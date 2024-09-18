@@ -484,6 +484,11 @@ let currentPage = {
     leads: 1
 };
 let currentTab = 'AllEvents'; // Default to 'AllEvents'
+let isAuthenticated = false;
+        let informationrequested=false
+        let leads = []
+        let bookings = []
+        document.getElementById('authTab').style.display = isAuthenticated ? 'none' : 'inline';
 
 function findTodaysBooking(items) {
     const today = new Date();
@@ -549,6 +554,10 @@ function updatePaginationInfo(containerId, totalItems) {
       // Check auth status when the page loads
 document.addEventListener('DOMContentLoaded', async function() {
     await checkAuthStatus();
+    if(isAuthenticated){
+      await syncCalendar();
+    }
+
     const createForm = document.getElementById('create-form');
     const clearButton = document.getElementById('clear');
 
@@ -668,12 +677,6 @@ document.addEventListener('DOMContentLoaded', async function() {
     displayItems({ type: "Bookings", data: filtered });
 }
 });
-
-        let isAuthenticated = false;
-        let informationrequested=false
-        let leads = []
-        let bookings = []
-        document.getElementById('authTab').style.display = isAuthenticated ? 'none' : 'inline';
 
         function openTab(evt, tabName) {
     console.log('Opening tab:', tabName); // Debug log
@@ -1250,7 +1253,7 @@ filteredBookings = itemsData
             ${endTime < now ? `<label>Customer Happy: <input type="checkbox" name="customer_happy" ${item.customer_happy ? 'checked' : ''}></label>` : ''}
             ${item.sent_invoice ? `<label>Deposit Paid: <input type="checkbox" name="deposit_paid" ${item.deposit_paid ? 'checked' : ''}></label>` : ''}
             <label>Microphone Needed: <input type="checkbox" name="microphone_needed" ${item.microphone_needed ? 'checked' : ''}></label>
-            ${endTime < now ? `<label>Full Payment Made: <input type="checkbox" name="full_payment_made" ${item.full_payment_made && item.sent_invoice ? 'checked' : ''}></label>` : ''}
+            ${endTime < now ? `<label>Full Payment Made: <input type="checkbox" name="full_payment_made" ${item.full_payment_made  ? 'checked' : ''}></label>` : ''}
         </div>
         ` : ''}
         ${type === "Leads" ? `
@@ -1797,7 +1800,6 @@ async function checkAuthStatus() {
         if (!isAuthenticated) {
             openTab(null, 'Auth');
         } else {
-            await syncCalendar();
             await fetchAllItems();
         }
         return isAuthenticated;
