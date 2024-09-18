@@ -91,7 +91,8 @@ if (require.main === module) {
     Each object in the array should include properties for customer_name, email_address, phone_number, website, price, address, start_time, and end_time (in AEST).
     Also include a short summary in the summary property. If no price is mentioned, the default should be 0. The price should only be a number, without any
     dollar sign. The start_time and end_time should be converted to timestamptz format. There may be a url appended at the end of the information I give you,
-    I would like this to be the website property of the object you return. The information I give you may request several bookings.
+    I would like this to be the website property of the object you return. My website, www.Julianbullmagic.com, may be somewhere in the text
+    but you can ignore this as it is not the website we are looking for. The information I give you may request several bookings.
       There might be a conversation included in which the customer gives updated or more specific details about the event or events, in that
   case you should use this more recent or specific information in your response. In other words, we need the most recent and specific details about
   the booking or bookings. The response should be an array of javascript objects, 

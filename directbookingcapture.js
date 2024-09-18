@@ -22,7 +22,7 @@ async function getChatGPTResponse(prompt) {
   try {
     const response = await openai.chat.completions.create({
       messages: [{ role: "system", content: prompt }],
-      max_tokens: 180,
+      max_tokens: 400,
       model: "gpt-4o-mini",
     });
     return response.choices[0].message.content;
@@ -34,54 +34,72 @@ async function getChatGPTResponse(prompt) {
 
 async function insertLead(leadData) {
   console.log("Checking for existing lead...",leadData);
+  let filteredLeadData = Object.fromEntries(
+    Object.entries(leadData).filter(([_, value]) => value !== null && value !== undefined && value !== '')
+  );
   await sleep(4000)
   try {
     const { data: existingLeads, error: fetchError } = await supabase
+    .from('Bookings')
+    .select('*')
+    .eq('customer_name', leadData.customer_name)
+    .eq('num', leadData.num);
+
+  if (fetchError) throw fetchError;
+
+  if (existingLeads && existingLeads.length > 0) {
+    // Update the existing lead with the new values
+    console.log("Existing lead found. Updating lead:", existingLeads[0]);
+    const { data: updatedLead, error: updateError } = await supabase
       .from('Bookings')
-      .select('*')
+      .update(filteredLeadData)
       .eq('customer_name', leadData.customer_name)
-      .eq('num', leadData.num);
+      .eq('num', leadData.num)
+      .select();
 
-    if (fetchError) throw fetchError;
-
-    if (existingLeads && existingLeads.length > 0) {
-      console.log("A lead for this customer with the same num already exists:", existingLeads[0]);
-      await sleep(20000);
-      return null; // Return null to indicate no insertion was made
-    }
-
-    // If no existing booking, proceed with insertion
-    console.log("No existing booking found. Inserting new lead...");
+    if (updateError) throw updateError;
+    console.log("Lead updated successfully:", updatedLead);
+    await sleep(4000);
+    return updatedLead; // Return updated lead data
+  } else {
+    // No existing lead found, insert a new one
+    console.log("No existing lead found. Inserting new lead...");
     const { data, error } = await supabase
       .from('Bookings')
-      .insert([leadData])
+      .insert([filteredLeadData])
       .select();
 
     if (error) throw error;
     console.log("New lead inserted successfully:", data);
-    await sleep(20000)
-    return data;
+    await sleep(4000);
+    return data; // Return inserted lead data
+  }
   } catch (error) {
     console.error("Error in lead process:", error);
     await sleep(20000)
     throw error;
   }
 }
+if (require.main === module) {
 
 (async () => {
   try {
     const input = clipboardy.readSync();
     console.log("Clipboard content:", input);
-    const prompt = `Here is some information about an event copied from a conversation or website "${input}".
+    let AuDate = new Date().toLocaleString("en-US", {timeZone: "Australia/Sydney"});
+
+    const prompt = `Here is some information about an event copied from a conversation or website "${input}". The date today is ${AuDate}
+    you can assume that the event being discussed is in the future relative to this date.
     I would like you to respond with a JSON array containing an object or objects that each contain properties for crucial booking information.
     Each object in the array should include properties for customer_name, email_address, phone_number, website, price, address, start_time, and end_time (in AEST).
     Also include a short summary in the summary property. If no price is mentioned, the default should be 0. The price should only be a number, without any
     dollar sign. The start_time and end_time should be converted to timestamptz format. There may be a url appended at the end of the information I give you,
-    I would like this to be the website property of the object you return. The information I give you may request several bookings.
+    I would like this to be the website property of the object you return. My website, www.Julianbullmagic.com, may be somewhere in the text
+    but you can ignore this as it is not the website we are looking for. The information I give you may request several bookings.
       There might be a conversation included in which the customer gives updated or more specific details about the event or events, in that
   case you should use this more recent or specific information in your response. In other words, we need the most recent and specific details about
   the booking or bookings. The response should be an array of javascript objects, 
-   nothing else outside this, no apostrophes, quotation marks or other characters. Include no special characters in the response, essentially it is minified.`;
+   nothing else outside this. Include no special characters in the response, essentially it is minified.`;
 
 
     let leadData;
@@ -93,6 +111,10 @@ async function insertLead(leadData) {
         sleep(5000)
         try {
           let chatGPTResponse = await getChatGPTResponse(prompt);
+          chatGPTResponse=chatGPTResponse.replace("`","")
+          chatGPTResponse=chatGPTResponse.replace("json","")
+          chatGPTResponse=chatGPTResponse.replace("JSON","")
+
           console.log("ChatGPT response:", chatGPTResponse);
           sleep(5000)
           try{
@@ -163,6 +185,7 @@ async function insertLead(leadData) {
     console.error("An error occurred:", error);
   }
 })();
+}
 
 async function processLead(lead, supabase) {
   console.log('Starting to process lead:', JSON.stringify(lead, null, 2));
@@ -172,6 +195,7 @@ async function processLead(lead, supabase) {
     const paddedStartTime = new Date(new Date(lead.start_time).getTime() - 30 * 60000); // 30 minutes before
     const paddedEndTime = new Date(new Date(lead.end_time).getTime() + 15 * 60000); // 15 minutes after
 
+
     lead.start_time = paddedStartTime.toISOString();
     lead.end_time = paddedEndTime.toISOString();
 
@@ -180,6 +204,7 @@ async function processLead(lead, supabase) {
     console.log('Padded start time:', lead.start_time);
     console.log('Original end time:', lead.original_end_time);
     console.log('Padded end time:', lead.end_time);
+    // Geocode the lead address
     const leadCoords = await geocodeAddress(lead.address);
     if (!leadCoords) {
       console.error("Failed to geocode lead address:", lead.address);

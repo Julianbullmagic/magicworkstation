@@ -633,11 +633,13 @@ document.addEventListener('DOMContentLoaded', async function() {
       currentPage.bookings = 1;
         if (this.checked) {
           todayOnwardsCheckbox.checked=false
-            todayCheckbox.checked = false;
+          todayCheckbox.checked = false;
         }
         filterBookings();
       });
+
       function filterBookings() {
+        console.log("FILTERING")
     let filtered = allBookings;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -655,10 +657,12 @@ document.addEventListener('DOMContentLoaded', async function() {
             return bookingDate.toDateString() === tomorrow.toDateString();
         });
     } else if (todayOnwardsCheckbox.checked) {
+      console.log(todayOnwardsCheckbox.checked,"todayOnwardsCheckbox.checked")
         filtered = allBookings.filter(booking => {
             const bookingDate = new Date(booking.start_time);
-            return bookingDate.toDateString() >= today.toDateString();
+            return bookingDate >= today;
         });
+        console.log(filtered)
     }
 
     displayItems({ type: "Bookings", data: filtered });
@@ -1074,7 +1078,7 @@ function applySearch(items) {
 }
 
 async function displayItems(items, containerId) {
-  console.log(items.data,"LOGGING ITEMS")
+  console.log(items.data,"LOGGING ITEMS",isSearchActive)
     let eventsContainer;
     let eventsOuterContainer;
     let eventsOuterContainerTwo;
@@ -1109,6 +1113,10 @@ async function displayItems(items, containerId) {
             document.getElementById('routeMapButton').style.display = 'block';
             document.getElementById('openRouteMap').textContent = 
                 `View ${todayFilter ? "Today's" : "Tomorrow's"} Route on Google Maps`;
+        }else if(isSearchActive){
+            document.getElementById('routeMapButton').style.display = 'block';
+            document.getElementById('openRouteMap').textContent = 
+                `View Route on Google Maps`;
         } else {
             document.getElementById('routeMapButton').style.display = 'none';
         }
@@ -1189,6 +1197,7 @@ eventsOuterContainerTwo.appendChild(paginationBottom);
 });
 let itemsData = filteredBookings;
 itemsData = applySearch(itemsData);
+filteredBookings = itemsData
     // Only iterate over items for the current page
     for (let i = startIndex; i < endIndex; i++) {
         const item = itemsData[i];

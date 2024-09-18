@@ -553,6 +553,7 @@ async function fetchAndStoreCalendarEventsWithPauses() {
     const fourMonthsLater = new Date(now.setMonth(now.getMonth() + 6)); // 4 months from the original date
 
     try {
+      // Fetch events from Google Calendar
       const res = await calendar.events.list({
         calendarId: 'primary',
         timeMin: twoMonthsAgo.toISOString(),
@@ -572,6 +573,7 @@ async function fetchAndStoreCalendarEventsWithPauses() {
       if (supabaseError) throw supabaseError;
 
       const bookingsMap = new Map(existingBookings.map(booking => [booking.id, booking]));
+      const googleEventIds = new Set(events.map(event => event.id));
 
       for (const event of events) {
         if (shouldPauseSyncForOtherOperations) {
@@ -580,6 +582,39 @@ async function fetchAndStoreCalendarEventsWithPauses() {
         }
 
         await processEvent(event, bookingsMap);
+        await sleep(0); // Yield to event loop
+      }
+
+      // New functionality: Create Google Calendar events for Supabase bookings that don't have an equivalent
+      for (const [bookingId, booking] of bookingsMap.entries()) {
+        if (!googleEventIds.has(bookingId)) {
+          try {
+            console.log(`Creating Google Calendar event for Supabase booking: ${bookingId}`);
+            const newEventId = await addBookingToGoogleCalendar(booking);
+            console.log(`Created Google Calendar event with ID: ${newEventId}`);
+            
+            // Update the Supabase booking with the new Google Calendar event ID
+            const { error } = await supabase
+              .from('Bookings')
+              .update({ id: newEventId })
+              .eq('id', bookingId);
+
+            if (error) {
+              console.error(`Error updating Supabase booking ${bookingId} with new Google Calendar event ID:`, error);
+            } else {
+              console.log(`Updated Supabase booking ${bookingId} with new Google Calendar event ID: ${newEventId}`);
+              bookingsMap.set(newEventId, { ...booking, id: newEventId });
+              bookingsMap.delete(bookingId);
+            }
+          } catch (error) {
+            console.error(`Error creating Google Calendar event for Supabase booking ${bookingId}:`, error);
+          }
+        }
+        
+        if (shouldPauseSyncForOtherOperations) {
+          await sleep(100); // Small delay to allow other operations
+          shouldPauseSyncForOtherOperations = false;
+        }
         await sleep(0); // Yield to event loop
       }
 
