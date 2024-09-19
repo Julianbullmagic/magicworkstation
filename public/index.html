@@ -521,7 +521,6 @@ function changePage(containerId, direction) {
         currentPage[containerId]--;
     }
     
-    displayItems(items, containerId);
 }
 
 function updatePaginationInfo(containerId, totalItems) {
@@ -1080,7 +1079,7 @@ function applySearch(items) {
     });
 }
 
-async function displayItems(items, containerId) {
+async function displayItems(items,containerId) {
   console.log(items.data,"LOGGING ITEMS",isSearchActive)
     let eventsContainer;
     let eventsOuterContainer;
@@ -1187,14 +1186,14 @@ eventsOuterContainerTwo.appendChild(paginationBottom);
     pagination.querySelector(`#prevPage-${containerId}`).addEventListener('click', () => {
         if (currentPage[containerId] > 1) {
             currentPage[containerId]--;
-            displayItems(items, containerId);
+            // displayItems(items, containerId);
         }
     });
 
     pagination.querySelector(`#nextPage-${containerId}`).addEventListener('click', () => {
         if (currentPage[containerId] < totalPages) {
             currentPage[containerId]++;
-            displayItems(items, containerId);
+            // displayItems(items, containerId);
         }
     });
 });
@@ -1297,7 +1296,7 @@ filteredBookings = itemsData
 `       
 eventsContainer.appendChild(eventElement);
 
-    document.getElementById(`form-${item.id}`).addEventListener('submit', (e) => {
+    document.getElementById(`form-${item.id}`).addEventListener('submit', async (e) => {
       e.preventDefault();
       if (!isAuthenticated) {
         alert('Please authenticate with Google Calendar first.');
@@ -1307,7 +1306,7 @@ eventsContainer.appendChild(eventElement);
       console.log(item,item.id,type,"id and type")
       const isConfirmed = confirm("Are you sure you want to update this?");
       if (isConfirmed) {
-      updateItem(item.id,type);
+      await updateItem(item.id,type,items.data,containerId);
       }
     });
 
@@ -1418,6 +1417,9 @@ console.log('Converting lead to booking, created google event', result);
         openTab(null, 'Auth');
         return;
     }
+    const isConfirmed = confirm("Are you sure you want to send this email to get more information?");
+    
+    if (isConfirmed) {
           const emailContent = generateInfoRequestEmail(item);
           console.log(emailContent, "emailContent");
           try {
@@ -1440,6 +1442,7 @@ console.log('Converting lead to booking, created google event', result);
           } catch (error) {
             console.error('Error sending information request:', error);
           }
+        }
         });
       }
 
@@ -1452,6 +1455,8 @@ console.log('Converting lead to booking, created google event', result);
         openTab(null, 'Auth');
         return;
     }
+    const isConfirmed = confirm("Are you sure you want to send this email to send this review request?");
+    if (isConfirmed) {
           try {
             await fetch('/send-email', {
               method: 'POST',
@@ -1461,7 +1466,7 @@ console.log('Converting lead to booking, created google event', result);
               body: JSON.stringify({
                 to: item.email_address,
                 subject: `Review Request`,
-                booking: generateReviewRequestEmail(item),
+                text: generateReviewRequestEmail(item),
               }),
             });
             item.review_requested = true;
@@ -1470,6 +1475,7 @@ console.log('Converting lead to booking, created google event', result);
           } catch (error) {
             console.error('Error sending invoice:', error);
           }
+        }
         });  
       }
 
@@ -1482,6 +1488,9 @@ console.log('Converting lead to booking, created google event', result);
         openTab(null, 'Auth');
         return;
     }
+    const isConfirmed = confirm("Are you sure you want to send this invoice?");
+    
+    if (isConfirmed) {
           try {
             await fetch('/send-invoice-request', {
               method: 'POST',
@@ -1500,6 +1509,7 @@ console.log('Converting lead to booking, created google event', result);
           } catch (error) {
             console.error('Error sending invoice:', error);
           }
+        }
         });  
       }
 
@@ -1512,6 +1522,9 @@ console.log('Converting lead to booking, created google event', result);
         openTab(null, 'Auth');
         return;
     }
+    const isConfirmed = confirm("Are you sure you want to send this email to send this final reminder?");
+    
+    if (isConfirmed) {
           try {
             await fetch('/send-email', {
               method: 'POST',
@@ -1531,6 +1544,7 @@ console.log('Converting lead to booking, created google event', result);
           } catch (error) {
             console.error('Error sending final booking reminder:', error);
           }
+        }
         });
       }
 
@@ -1544,6 +1558,9 @@ console.log('Converting lead to booking, created google event', result);
         openTab(null, 'Auth');
         return;
     }
+    const isConfirmed = confirm("Are you sure you want to send this follow up?");
+    
+    if (isConfirmed) {
           try {
             await fetch('/send-email', {
               method: 'POST',
@@ -1563,6 +1580,7 @@ console.log('Converting lead to booking, created google event', result);
           } catch (error) {
             console.error('Error sending follow up if interested email:', error);
           }
+        }
         });
       }
      }
@@ -1636,23 +1654,19 @@ function generateReviewRequestEmail(booking) {
   let num=Math.floor(Math.random()*5)+1
     let prompt
     if (num==1){
-        prompt = `Would you mind leaving a review of my work here please? https://www.facebook.com/ItsCrowdPleaser/reviews 
-    Crowdplease is like a booking agent, I get jobs through them. They've been very good to me, so I try to make them look good.`
+        prompt = `Would you mind leaving a review of my work here please? https://www.facebook.com/ItsCrowdPleaser/reviews Crowdpleaser is like a booking agent, I get jobs through them. They've been very good to me, so I try to make them look good.`
     }
     if (num==2){
         prompt = `Would you mind leaving a review of my work here please? https://www.facebook.com/Julianbullmagic`
     }
     if (num==3){
-        prompt = `Would you mind leaving a review of my work on Oneflare's Google profile? You can find it by Google Searching for 
-        "Oneflare". Oneflare is like a booking agent, I get jobs through them. They've been very good to me, so I try to make them look good.`
+        prompt = `Would you mind leaving a review of my work on Oneflare's Google profile? You can find it by Google Searching for "Oneflare". Oneflare is like a booking agent, I get jobs through them. They've been very good to me, so I try to make them look good.`
     }
     if (num==4){
-        prompt = `Would you mind leaving a review of my work on Crowdpleaser's Google profile? You can find it by Google Searching for 
-        "Crowdpleaser". Crowdpleaser is like a booking agent, I get jobs through them. They've been very good to me, so I try to make them look good.`
+        prompt = `Would you mind leaving a review of my work on Crowdpleaser's Google profile? You can find it by Google Searching for "Crowdpleaser". Crowdpleaser is like a booking agent, I get jobs through them. They've been very good to me, so I try to make them look good.`
     }
     if (num==5){
-        prompt = `Would you mind leaving a review of my work on my Google profile? You can find it by Google Searching for 
-        "Julian bull magic".`
+        prompt = `Would you mind leaving a review of my work on my Google profile? You can find it by Google Searching for "Julian bull magic".`
     }
     console.log(prompt,num)
 
@@ -1707,7 +1721,7 @@ console.log(message)
   }
 }
 
-function updateItem(id,type) {
+async function updateItem(id,type,items,containerId) {
   if (!isAuthenticated) {
         alert('Please authenticate with Google Calendar first.');
         openTab(null, 'Auth');
@@ -1754,11 +1768,19 @@ function updateItem(id,type) {
   if (form.review_requested) updatedItem.review_requested = form.review_requested.checked;
   if (form.full_payment_made) updatedItem.full_payment_made = form.full_payment_made.checked;
   if (form.sent_invoice) updatedItem.sent_invoice = form.sent_invoice.checked;
-
- console.log(type,"type")
-
-  // Send update to server using fetch
-  fetch(`/api/${type.toLowerCase()}/update`, {
+let newarray=[]
+      for (let it of items){
+        if (it.id==updatedItem.id){
+          newarray.push(updatedItem)
+          console.log(updatedItem)
+        }else{
+          newarray.push(it)
+        }
+      }
+      console.log(newarray,"ITEMS",type,"TYPE")
+      displayItems({ type: type, data: newarray});
+      
+      await fetch(`/api/${type.toLowerCase()}/update`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -1768,8 +1790,6 @@ function updateItem(id,type) {
   .then(response => response.json())
   .then(data => {
     console.log('Update successful:', data);
-    // Optionally update the display here if needed
-    displayItems([data.data], false);
   })
   .catch(error => {
     console.error('Error updating item:', error);

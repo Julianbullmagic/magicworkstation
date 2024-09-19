@@ -1,0 +1,4 @@
+THINGS TO FIX IN MANAGEMENT SYSTEM
+-pressing update button should update forms in real time, some buttons not updating until page refresh
+-deleting a booking does not delete it's equivalent in google calendar
+-check all displayItems calls are correct

@@ -386,7 +386,7 @@ async function sendEmail(recipient,subject,message,attachment){
     subject: subject,
     text: message
   };
-
+  console.log(mailOptions,"SENDING EMAIL")
   if (attachment) {
     mailOptions.to=allRecipients.join(', ')
     mailOptions.attachments = [{
@@ -1033,13 +1033,11 @@ app.post('/api/bookings', async (req, res) => {
 });
 
 
-// Updated route to delete a booking
 app.delete('/api/bookings/:id', async (req, res) => {
   const { id } = req.params;
-  
+
   try {
     // Delete from Google Calendar
-    await handleEventDeletion('Bookings', id);
     await deleteBookingFromGoogleCalendar(id);
 
     // Delete from Supabase
@@ -1048,9 +1046,10 @@ app.delete('/api/bookings/:id', async (req, res) => {
       .delete()
       .eq('id', id);
 
-    if (error){
-      console.log(error)
-    }else{
+    if (error) {
+      console.log(error);
+      throw error; // Throw error to be caught in the catch block
+    } else {
       await handleEventDeletion('Bookings', id);
     }
 
@@ -1062,7 +1061,9 @@ app.delete('/api/bookings/:id', async (req, res) => {
 });
 
 app.put('/api/bookings/update', async (req, res) => {
-  const updatedBooking = req.body;
+  let updatedBooking = req.body;
+  delete updatedBooking.type
+  console.log(updatedBooking)
   try {
     console.log('Updating booking:', updatedBooking.id);
 
@@ -1087,7 +1088,7 @@ app.put('/api/bookings/update', async (req, res) => {
         console.warn('Failed to geocode new address');
       }
     }
-console.log(updatedBooking)
+     console.log(updatedBooking)
     const { data: updated, error: updateError } = await supabase
       .from('Bookings')
       .update(updatedBooking)
@@ -1663,20 +1664,25 @@ async function syncCalendarWithSupabase(calendarEvents) {
 }
   
   // Function to delete a booking from Google Calendar
-async function deleteBookingFromGoogleCalendar(eventId) {
-  return await makeCalendarApiCall(async () => {
-  try {
-    await calendar.events.delete({
-      calendarId: 'primary',
-      eventId: eventId,
+
+  async function deleteBookingFromGoogleCalendar(eventId) {
+    return await makeCalendarApiCall(async () => {
+      try {
+        await calendar.events.delete({
+          calendarId: 'primary',
+          eventId: eventId,
+        });
+        console.log('Event deleted from Google Calendar');
+      } catch (error) {
+        if (error.code === 404) {
+          console.log('Event not found in Google Calendar, may have been already deleted');
+        } else {
+          console.error('Error deleting Google Calendar event:', error);
+          throw error;
+        }
+      }
     });
-    console.log('Event deleted');
-  } catch (error) {
-    console.error('Error deleting Google Calendar event:', error);
-    throw error;
   }
-})
-}
 
 
   // Helper function to parse and validate date-time strings
